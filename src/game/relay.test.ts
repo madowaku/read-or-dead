@@ -1,16 +1,26 @@
 import { describe, expect, it } from "vitest";
-import { LocalRelay, RelayError, SHOT_RADIUS } from "./relay";
+import { MAX_RADIUS, MIN_RADIUS, SLOW_LIMIT_MS, radiusFor } from "./power";
+import { LocalRelay, RelayError } from "./relay";
 import type { Question } from "./types";
 
 const QUESTION: Question = {
   key: "test",
-  kind: "text",
+  kind: "kanji",
   source: "檸檬",
   answer: "れもん",
   acceptedAnswers: ["檸檬"],
 };
 
 const CENTER = 0.5;
+const SHOWN_AT = 1_000;
+const QUICK_MS = 4_000;
+
+/** 画像を見せて QUICK_MS 後に「わかった！」を押してから回答する */
+function answer(relay: LocalRelay, token: string, input: string): boolean {
+  relay.startClock(token, SHOWN_AT);
+  relay.buzz(token, SHOWN_AT + QUICK_MS);
+  return relay.submitAnswer(token, input).correct;
+}
 const SECOND_TURN = 2;
 
 function errorCode(action: () => unknown): string | undefined {
@@ -27,9 +37,9 @@ describe("LocalRelay", () => {
   it("正解すると 1 発撃てて次のターンへ進む", () => {
     const relay = LocalRelay.create(QUESTION);
     const token = relay.claimTurn();
-    expect(relay.submitAnswer(token, "レモン").correct).toBe(true);
+    expect(answer(relay, token, "レモン")).toBe(true);
     const shot = relay.fireShot(token, CENTER, CENTER);
-    expect(shot.radius).toBe(SHOT_RADIUS);
+    expect(shot.radius).toBe(radiusFor(QUICK_MS));
     expect(relay.publicView().turnNumber).toBe(SECOND_TURN);
     expect(relay.publicView().shots).toHaveLength(1);
   });
@@ -45,7 +55,7 @@ describe("LocalRelay", () => {
     const relay = LocalRelay.create(QUESTION);
     const token = relay.claimTurn();
     expect(errorCode(() => relay.claimTurn())).toBe("turn-already-claimed");
-    relay.submitAnswer(token, "れもん");
+    answer(relay, token, "れもん");
     expect(errorCode(() => relay.submitAnswer(token, "れもん"))).toBe("turn-not-claimed");
     relay.fireShot(token, CENTER, CENTER);
     expect(errorCode(() => relay.fireShot(token, CENTER, CENTER))).toBe("invalid-token");
@@ -56,7 +66,7 @@ describe("LocalRelay", () => {
     const relay = LocalRelay.create(QUESTION);
     const token = relay.claimTurn();
     expect(errorCode(() => relay.fireShot(token, CENTER, CENTER))).toBe("turn-not-correct");
-    relay.submitAnswer(token, "れもん");
+    answer(relay, token, "れもん");
     expect(errorCode(() => relay.fireShot(token, CENTER + 1, CENTER))).toBe("out-of-bounds");
     expect(errorCode(() => relay.fireShot("other", CENTER, CENTER))).toBe("invalid-token");
   });
@@ -65,10 +75,10 @@ describe("LocalRelay", () => {
     const relay = LocalRelay.create(QUESTION);
     expect(errorCode(() => relay.result())).toBe("chain-not-completed");
     const first = relay.claimTurn();
-    relay.submitAnswer(first, "れもん");
+    answer(relay, first, "れもん");
     relay.fireShot(first, CENTER, CENTER);
     const second = relay.claimTurn();
-    expect(relay.submitAnswer(second, "みかん").correct).toBe(false);
+    expect(answer(relay, second, "みかん")).toBe(false);
     expect(errorCode(() => relay.claimTurn())).toBe("chain-not-active");
 
     const result = relay.result();
@@ -89,10 +99,36 @@ describe("LocalRelay", () => {
   it("スナップショットから復元しても状態が一致する", () => {
     const relay = LocalRelay.create(QUESTION);
     const token = relay.claimTurn();
-    relay.submitAnswer(token, "れもん");
+    answer(relay, token, "れもん");
     const restored = LocalRelay.restore(JSON.parse(JSON.stringify(relay.snapshot())));
     restored.fireShot(token, CENTER, CENTER);
     expect(errorCode(() => restored.fireShot(token, CENTER, CENTER))).toBe("invalid-token");
     expect(restored.publicView().turnNumber).toBe(SECOND_TURN);
+  });
+
+  it("「わかった！」を押す前は回答できず、押すのは 1 回だけ", () => {
+    const relay = LocalRelay.create(QUESTION);
+    const token = relay.claimTurn();
+    expect(errorCode(() => relay.buzz(token, SHOWN_AT))).toBe("clock-not-started");
+    relay.startClock(token, SHOWN_AT);
+    expect(errorCode(() => relay.submitAnswer(token, "れもん"))).toBe("not-buzzed");
+    relay.buzz(token, SHOWN_AT);
+    expect(errorCode(() => relay.buzz(token, SHOWN_AT))).toBe("already-buzzed");
+  });
+
+  it("時計は最初に見せた時刻から動き、やり直しで戻せない", () => {
+    const relay = LocalRelay.create(QUESTION);
+    const token = relay.claimTurn();
+    relay.startClock(token, SHOWN_AT);
+    expect(relay.startClock(token, SHOWN_AT + SLOW_LIMIT_MS)).toBe(SHOWN_AT);
+    expect(relay.buzz(token, SHOWN_AT + SLOW_LIMIT_MS + SLOW_LIMIT_MS)).toBe(MIN_RADIUS);
+  });
+
+  it("即答なら最大の弾", () => {
+    const relay = LocalRelay.create(QUESTION);
+    const token = relay.claimTurn();
+    relay.startClock(token, SHOWN_AT);
+    expect(relay.buzz(token, SHOWN_AT)).toBe(MAX_RADIUS);
+    expect(relay.publicView().power).toBe(MAX_RADIUS);
   });
 });

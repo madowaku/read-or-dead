@@ -3,10 +3,8 @@
 
 import { randomId } from "./id";
 import { isCorrect } from "./normalize";
+import { radiusFor } from "./power";
 import type { Chain, Question, Shot, Turn } from "./types";
-
-/** 穴の半径（画像の幅に対する比率）。初期版は固定。 */
-export const SHOT_RADIUS = 0.08;
 
 export type RelayErrorCode =
   | "chain-not-active"
@@ -14,6 +12,9 @@ export type RelayErrorCode =
   | "turn-already-claimed"
   | "invalid-token"
   | "turn-not-claimed"
+  | "clock-not-started"
+  | "already-buzzed"
+  | "not-buzzed"
   | "turn-not-correct"
   | "already-shot"
   | "out-of-bounds";
@@ -32,6 +33,12 @@ export interface PublicView {
   readonly sourceImageKey: string;
   readonly turnNumber: number;
   readonly turnStatus: Turn["status"];
+  /** 現在のターンで画像を見せ始めた時刻（未開始なら null） */
+  readonly shownAt: number | null;
+  /** 「わかった！」を押した時刻（未押下なら null） */
+  readonly buzzedAt: number | null;
+  /** 押下済みなら、このターンで撃てる弾の半径 */
+  readonly power: number | null;
   readonly shots: readonly Shot[];
 }
 
@@ -100,6 +107,9 @@ export class LocalRelay {
       sourceImageKey: this.chain.sourceImageKey,
       turnNumber: this.chain.turnNumber,
       turnStatus: this.currentTurn().status,
+      shownAt: this.currentTurn().shownAt,
+      buzzedAt: this.currentTurn().buzzedAt,
+      power: powerOf(this.currentTurn()),
       shots: [...this.shots],
     };
   }
@@ -113,8 +123,25 @@ export class LocalRelay {
     return turn.tokenHash;
   }
 
+  /** 画像を見せ始めた時刻を記録する。2 回目以降は最初の時刻を保つ（再読み込みで時計を戻せない）。 */
+  startClock(token: string, now: number = Date.now()): number {
+    const turn = this.claimedTurn(token);
+    if (turn.shownAt === null) turn.shownAt = now;
+    return turn.shownAt;
+  }
+
+  /** 「わかった！」。ここで弾の大きさが決まる。 */
+  buzz(token: string, now: number = Date.now()): number {
+    const turn = this.claimedTurn(token);
+    if (turn.shownAt === null) throw new RelayError("clock-not-started");
+    if (turn.buzzedAt !== null) throw new RelayError("already-buzzed");
+    turn.buzzedAt = Math.max(turn.shownAt, now);
+    return radiusFor(turn.buzzedAt - turn.shownAt);
+  }
+
   submitAnswer(token: string, input: string, now: number = Date.now()): AnswerOutcome {
     const turn = this.claimedTurn(token);
+    if (turn.buzzedAt === null) throw new RelayError("not-buzzed");
     const correct = isCorrect(input, this.chain.answer, this.chain.acceptedAnswers);
     turn.submittedAnswer = input;
     if (correct) {
@@ -139,7 +166,9 @@ export class LocalRelay {
     if (turn.status !== "correct") throw new RelayError("turn-not-correct");
     if (!isUnit(x) || !isUnit(y)) throw new RelayError("out-of-bounds");
 
-    const shot: Shot = { chainId: this.chain.id, turnNumber: turn.turnNumber, x, y, radius: SHOT_RADIUS, createdAt: now };
+    const radius = powerOf(turn);
+    if (radius === null) throw new RelayError("not-buzzed");
+    const shot: Shot = { chainId: this.chain.id, turnNumber: turn.turnNumber, x, y, radius, createdAt: now };
     this.shots.push(shot);
     turn.finishedAt = now;
     this.chain.turnNumber = turn.turnNumber + 1;
@@ -196,7 +225,22 @@ export class LocalRelay {
 }
 
 function newTurn(chainId: string, turnNumber: number, now: number): Turn {
-  return { chainId, turnNumber, tokenHash: randomId(), status: "waiting", createdAt: now, finishedAt: null, submittedAnswer: null };
+  return {
+    chainId,
+    turnNumber,
+    tokenHash: randomId(),
+    status: "waiting",
+    createdAt: now,
+    finishedAt: null,
+    submittedAnswer: null,
+    shownAt: null,
+    buzzedAt: null,
+  };
+}
+
+function powerOf(turn: Turn): number | null {
+  if (turn.shownAt === null || turn.buzzedAt === null) return null;
+  return radiusFor(turn.buzzedAt - turn.shownAt);
 }
 
 function isUnit(value: number): boolean {

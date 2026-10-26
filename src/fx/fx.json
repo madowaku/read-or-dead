@@ -1,0 +1,34 @@
+{
+  "burst": {
+    "durationMs": 900,
+    "referenceRadius": 0.08,
+    "shardBase": 26,
+    "shardPerRadius": 260,
+    "speedMin": 0.5,
+    "speedMax": 2.1,
+    "gravity": 2.4,
+    "sizeMin": 0.008,
+    "sizeMax": 0.042,
+    "spinMax": 14,
+    "flashPortion": 0.22,
+    "flashScale": 2.4,
+    "ringGrowth": 3.2,
+    "ringWidth": 0.022,
+    "ringDelay": 0.12,
+    "toneInk": 0.5,
+    "toneSpark": 0.8
+  },
+  "hole": {
+    "growMs": 160
+  },
+  "aim": {
+    "baseAmplitude": 0.012,
+    "moveAmplitude": 0.035,
+    "settleMs": 700,
+    "freqX1": 0.0011,
+    "freqX2": 0.0027,
+    "freqY1": 0.0013,
+    "freqY2": 0.0031,
+    "mixSecond": 0.45
+  }
+}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Shot } from "../game/types";
-import { HOLD_ORIGINAL_MS, HOLD_START_MS, STEP_MS, frameAt, replayDuration } from "./timeline";
+import { HOLD_ORIGINAL_MS, HOLD_START_MS, QUESTION_CARD_MS, RESTORE_BUDGET_MS, STEP_MS, frameAt, replayDuration } from "./timeline";
 
 const RADIUS = 0.08;
 const SHOT_COUNT = 3;
@@ -46,5 +46,12 @@ describe("frameAt", () => {
 
   it("ショットが 0 発でも破綻しない", () => {
     expect(frameAt([], HOLD_START_MS).phase).toBe("original");
+  });
+
+  it("発数が多くても塞ぐ時間は上限に収まる", () => {
+    const MANY = 40;
+    const many = Array.from({ length: MANY }, (_, index) => ({ ...SHOTS[0], turnNumber: index + 1 }) as Shot);
+    expect(replayDuration(MANY)).toBe(HOLD_START_MS + RESTORE_BUDGET_MS + HOLD_ORIGINAL_MS + QUESTION_CARD_MS);
+    expect(frameAt(many, HOLD_START_MS + RESTORE_BUDGET_MS).phase).toBe("original");
   });
 });

@@ -5,6 +5,8 @@ import type { Shot } from "../game/types";
 
 export const HOLD_START_MS = 1400;
 export const STEP_MS = 650;
+/** 穴を塞ぐ時間の上限。発数が多くても全体を 8〜12 秒程度に収める。 */
+export const RESTORE_BUDGET_MS = 6000;
 export const HOLD_ORIGINAL_MS = 1200;
 export const QUESTION_CARD_MS = 2600;
 
@@ -18,8 +20,13 @@ export interface ReplayFrame {
   readonly remaining: number;
 }
 
+/** 1 発を塞ぐ時間。発数が多いほど速くなる。 */
+export function stepMs(shotCount: number): number {
+  return shotCount ? Math.min(STEP_MS, RESTORE_BUDGET_MS / shotCount) : STEP_MS;
+}
+
 export function replayDuration(shotCount: number): number {
-  return HOLD_START_MS + shotCount * STEP_MS + HOLD_ORIGINAL_MS + QUESTION_CARD_MS;
+  return HOLD_START_MS + shotCount * stepMs(shotCount) + HOLD_ORIGINAL_MS + QUESTION_CARD_MS;
 }
 
 /** 0→1 を滑らかに。穴が塞がる動きに使う。 */
@@ -33,10 +40,11 @@ export function frameAt(shots: readonly Shot[], elapsedMs: number): ReplayFrame 
   const total = shots.length;
   if (elapsedMs < HOLD_START_MS) return { phase: "damaged", shots, remaining: total };
 
+  const step = stepMs(total);
   const restoring = elapsedMs - HOLD_START_MS;
-  if (restoring < total * STEP_MS) {
-    const undone = Math.floor(restoring / STEP_MS);
-    const progress = easeInOut((restoring - undone * STEP_MS) / STEP_MS);
+  if (restoring < total * step) {
+    const undone = Math.floor(restoring / step);
+    const progress = easeInOut((restoring - undone * step) / step);
     const keep = total - undone - 1;
     const closing = shots[keep];
     const kept = shots.slice(0, keep);
@@ -44,7 +52,7 @@ export function frameAt(shots: readonly Shot[], elapsedMs: number): ReplayFrame 
     return { phase: "restoring", shots: frameShots, remaining: keep + 1 };
   }
 
-  const afterRestore = restoring - total * STEP_MS;
+  const afterRestore = restoring - total * step;
   if (afterRestore < HOLD_ORIGINAL_MS) return { phase: "original", shots: [], remaining: 0 };
   return { phase: "question", shots: [], remaining: 0 };
 }

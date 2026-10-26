@@ -1,11 +1,8 @@
 // リプレイの再生と録画。録画は再生中のキャンバスをそのまま MediaRecorder に流す。
 
-import type { Shot } from "../game/types";
-import type { FrameComposer } from "./compose";
-import { frameAt, replayDuration } from "./timeline";
-
-const CAPTURE_FPS = 30;
-const VIDEO_BITS_PER_SECOND = 6_000_000;
+/** X 向けに軽く。720×1280・24fps・約 1.8Mbps で 5 秒なら 1MB 強。 */
+const CAPTURE_FPS = 24;
+const VIDEO_BITS_PER_SECOND = 1_800_000;
 
 /** 共有しやすい順。Android Chrome は新しめなら mp4、古ければ webm になる。 */
 const VIDEO_TYPES: readonly string[] = [
@@ -35,20 +32,22 @@ export interface PlaybackHandle {
   readonly finished: Promise<void>;
 }
 
+/** 経過時間（ミリ秒）を受け取ってその瞬間の絵を描く */
+export type Drawer = (elapsedMs: number) => void;
+
 /** speed() は毎フレーム読むので、再生中の速度変更が反映される */
-export function play(canvas: HTMLCanvasElement, composer: FrameComposer, shots: readonly Shot[], speed: () => number): PlaybackHandle {
-  const duration = replayDuration(shots.length);
+export function play(draw: Drawer, duration: number, speed: () => number): PlaybackHandle {
   const state = { elapsed: 0, last: performance.now(), frameId: 0, stopped: false };
   const finished = new Promise<void>((resolve) => {
     const tick = (now: number): void => {
       if (state.stopped) return resolve();
       state.elapsed = Math.min(duration, state.elapsed + (now - state.last) * speed());
       state.last = now;
-      composer(canvas, frameAt(shots, state.elapsed));
+      draw(state.elapsed);
       if (state.elapsed >= duration) return resolve();
       state.frameId = requestAnimationFrame(tick);
     };
-    composer(canvas, frameAt(shots, 0));
+    draw(0);
     state.frameId = requestAnimationFrame(tick);
   });
   return {
@@ -67,7 +66,7 @@ export interface Recording {
 }
 
 /** 頭から再生し直しながら録画する */
-export async function record(canvas: HTMLCanvasElement, composer: FrameComposer, shots: readonly Shot[], speed: () => number): Promise<Recording> {
+export async function record(canvas: HTMLCanvasElement, draw: Drawer, duration: number, speed: () => number): Promise<Recording> {
   const type = supportedVideoType();
   if (!type) throw new RecordingError("この端末のブラウザは動画の書き出しに対応していません");
 
@@ -84,7 +83,7 @@ export async function record(canvas: HTMLCanvasElement, composer: FrameComposer,
 
   recorder.start();
   try {
-    await play(canvas, composer, shots, speed).finished;
+    await play(draw, duration, speed).finished;
   } finally {
     recorder.stop();
     stream.getTracks().forEach((track) => track.stop());

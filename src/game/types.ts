@@ -3,7 +3,7 @@
 
 export type ChainStatus = "active" | "completed" | "expired";
 export type TurnStatus = "waiting" | "claimed" | "correct" | "failed";
-export type QuestionKind = "text" | "silhouette" | "custom";
+export type QuestionKind = "kanji" | "word" | "silhouette" | "custom";
 
 export interface Chain {
   readonly id: string;
@@ -40,6 +40,10 @@ export interface Turn {
   finishedAt: number | null;
   /** 挑戦者が入力した回答（ギブアップ時は null） */
   submittedAnswer: string | null;
+  /** 画像を見せ始めた時刻。弾の大きさの計算に使う。 */
+  shownAt: number | null;
+  /** 「わかった！」を押した時刻 */
+  buzzedAt: number | null;
 }
 
 export interface Question {

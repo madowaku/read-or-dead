@@ -1,52 +1,50 @@
+// 問題バンク。データは src/data/*.json に置き、ここで Question に変換する。
+// 追加するときは JSON に 1 行足すだけでよい（シルエットは画像も public/questions/silhouette/ に置く）。
+
+import kanjiData from "../data/kanji.json";
+import silhouetteData from "../data/silhouettes.json";
+import wordData from "../data/words.json";
+import { seedFrom } from "../fx/random";
 import { randomId } from "./id";
 import { normalizeAnswer } from "./normalize";
-import type { Question } from "./types";
+import type { Question, QuestionKind } from "./types";
 
 interface TextEntry {
+  /** 画像に描く文字。"\n" は改行位置で、正解判定と表示では取り除く。 */
   readonly text: string;
   readonly answer: string;
   readonly also?: readonly string[];
 }
 
 interface SilhouetteEntry {
+  /** 元画像の名前（assets-src/silhouettes で始まるフォルダの <file>.png）。公開名は並び順の番号。 */
   readonly file: string;
+  /** 終了後にそのまま表示するので、読みやすい表記にする */
   readonly answer: string;
-  readonly also: readonly string[];
+  readonly also?: readonly string[];
 }
 
-// 文字問題は描かれた文字そのもの（漢字表記など）でも正解にする。
-// text の "\n" は画像上の改行位置。正解判定と表示では取り除く。
-const TEXT_ENTRIES: readonly TextEntry[] = [
-  { text: "檸檬", answer: "れもん" },
-  { text: "薔薇", answer: "ばら" },
-  { text: "憂鬱", answer: "ゆううつ" },
-  { text: "蒲公英", answer: "たんぽぽ" },
-  { text: "胡瓜", answer: "きゅうり" },
-  { text: "やきそば\nパン", answer: "やきそばぱん", also: ["焼きそばパン"] },
-  { text: "ちゃぶ台\n返し", answer: "ちゃぶだいがえし" },
-  { text: "ガラパゴス", answer: "がらぱごす" },
-  { text: "SUSHI", answer: "すし", also: ["寿司", "鮨"] },
-  { text: "東京\n特許\n許可局", answer: "とうきょうとっきょきょかきょく" },
-];
-
-// answer は終了後にそのまま表示するので、読みやすい表記にする
-const SILHOUETTE_ENTRIES: readonly SilhouetteEntry[] = [
-  { file: "rabbit", answer: "うさぎ", also: ["兎", "rabbit", "bunny"] },
-  { file: "giraffe", answer: "キリン", also: ["麒麟", "giraffe", "ジラフ"] },
-  { file: "elephant", answer: "ゾウ", also: ["象", "elephant"] },
-  { file: "penguin", answer: "ペンギン", also: ["penguin"] },
-  { file: "beetle", answer: "カブトムシ", also: ["兜虫", "甲虫", "カブト", "beetle"] },
-  { file: "bicycle", answer: "自転車", also: ["じてんしゃ", "チャリ", "チャリンコ", "bicycle", "bike"] },
-  { file: "helicopter", answer: "ヘリコプター", also: ["ヘリ", "helicopter"] },
-  { file: "guitar", answer: "ギター", also: ["アコギ", "アコースティックギター", "guitar"] },
-  { file: "whale", answer: "クジラ", also: ["鯨", "whale", "まっこうくじら", "ざとうくじら"] },
-  { file: "snail", answer: "カタツムリ", also: ["蝸牛", "でんでんむし", "まいまい", "snail"] },
-];
-
 const LINE_BREAK = "\n";
+const FILE_NUMBER_DIGITS = 2;
+const KEY_RADIX = 36;
 
 function flatten(text: string): string {
   return text.split(LINE_BREAK).join("");
+}
+
+/** 公開されるキーから答えが分からないよう、表示テキストのハッシュで作る */
+function textKey(kind: QuestionKind, text: string): string {
+  return `${kind}-${seedFrom(text).toString(KEY_RADIX)}`;
+}
+
+function fromText(kind: QuestionKind, entry: TextEntry): Question {
+  return {
+    key: textKey(kind, entry.text),
+    kind,
+    source: entry.text,
+    answer: entry.answer,
+    acceptedAnswers: [flatten(entry.text), ...(entry.also ?? [])],
+  };
 }
 
 /** 終了後に見せる答え。文字問題で表記と読みが違えば「胡瓜（きゅうり）」のように併記する。 */
@@ -56,34 +54,34 @@ export function displayAnswer(question: Question): string {
   return normalizeAnswer(shown) === normalizeAnswer(question.answer) ? shown : `${shown}（${question.answer}）`;
 }
 
-export const TEXT_QUESTIONS: readonly Question[] =TEXT_ENTRIES.map((entry, index) => ({
-  key: `text-${index + 1}`,
-  kind: "text",
-  source: entry.text,
-  answer: entry.answer,
-  acceptedAnswers: [flatten(entry.text), ...(entry.also ?? [])],
-}));
+const KANJI: readonly TextEntry[] = kanjiData;
+const WORDS: readonly TextEntry[] = wordData;
+const SILHOUETTES: readonly SilhouetteEntry[] = silhouetteData;
 
-const FILE_NUMBER_DIGITS = 2;
-
-// 公開されるキーと画像 URL から答えが分からないよう、番号で参照する。
-// 画像は assets-src/silhouettes/<file>.png を番号順に public へ書き出したもの。
-export const SILHOUETTE_QUESTIONS: readonly Question[] = SILHOUETTE_ENTRIES.map((entry, index) => ({
+/** 漢字・熟語・難読 */
+export const KANJI_QUESTIONS: readonly Question[] = KANJI.map((entry) => fromText("kanji", entry));
+/** 日常のことば・カタカナ・英語・ことわざ・短文 */
+export const WORD_QUESTIONS: readonly Question[] = WORDS.map((entry) => fromText("word", entry));
+/** シルエット・ピクトグラム。キーと画像 URL は番号にして答えを隠す。 */
+export const SILHOUETTE_QUESTIONS: readonly Question[] = SILHOUETTES.map((entry, index) => ({
   key: `silhouette-${index + 1}`,
   kind: "silhouette",
   source: `${import.meta.env.BASE_URL}questions/silhouette/${String(index + 1).padStart(FILE_NUMBER_DIGITS, "0")}.png`,
   answer: entry.answer,
-  acceptedAnswers: entry.also,
+  acceptedAnswers: entry.also ?? [],
 }));
 
-export const ALL_QUESTIONS: readonly Question[] = [...TEXT_QUESTIONS, ...SILHOUETTE_QUESTIONS];
+export const ALL_QUESTIONS: readonly Question[] = [...KANJI_QUESTIONS, ...WORD_QUESTIONS, ...SILHOUETTE_QUESTIONS];
 
 export function findQuestion(key: string): Question | undefined {
   return ALL_QUESTIONS.find((question) => question.key === key);
 }
 
-export function pickRandom(pool: readonly Question[], random: () => number = Math.random): Question {
-  const question = pool[Math.floor(random() * pool.length)];
+/** 遊んだことのない問題から選ぶ。全部遊んだら全体から選び直す。 */
+export function pickFresh(pool: readonly Question[], played: ReadonlySet<string>, random: () => number = Math.random): Question {
+  const fresh = pool.filter((question) => !played.has(question.key));
+  const candidates = fresh.length ? fresh : pool;
+  const question = candidates[Math.floor(random() * candidates.length)];
   if (!question) throw new RangeError("question pool is empty");
   return question;
 }
@@ -95,6 +93,6 @@ export function customQuestion(text: string, answer: string, acceptedAnswers: re
     kind: "custom",
     source: text,
     answer,
-    acceptedAnswers: [text, ...acceptedAnswers],
+    acceptedAnswers: [flatten(text), ...acceptedAnswers],
   };
 }

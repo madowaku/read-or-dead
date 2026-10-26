@@ -47,3 +47,25 @@ export async function shareOrDownload(blob: Blob, filename: string, text: string
   download(blob, filename);
   return "downloaded";
 }
+
+/** 投稿文をクリップボードへ。動画を X に直接添付できない端末向け。 */
+export async function copyText(text: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (err) {
+    throw new SaveError("コピーできませんでした。長押しで選んでコピーしてください。", { cause: err });
+  }
+}
+
+const X_INTENT = "https://x.com/intent/post";
+
+/** X の投稿画面を開く URL。動画は添付できないので、保存した動画を自分で添える。 */
+export function xIntentUrl(text: string, url: string): string {
+  const params = new URLSearchParams({ text, url });
+  return `${X_INTENT}?${params.toString()}`;
+}
+
+/** 今遊んでいるページの URL（Phase 2 で挑戦用 URL に置き換える） */
+export function siteUrl(): string {
+  return `${location.origin}${location.pathname}`;
+}

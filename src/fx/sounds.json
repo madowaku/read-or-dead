@@ -1,0 +1,111 @@
+{
+  "recipes": {
+    "buzz": [
+      {
+        "type": "square",
+        "from": 880,
+        "to": 880,
+        "peak": 0.25,
+        "decay": 0.08,
+        "delay": 0
+      },
+      {
+        "type": "square",
+        "from": 1320,
+        "to": 1320,
+        "peak": 0.25,
+        "decay": 0.14,
+        "delay": 0.08
+      }
+    ],
+    "ready": [
+      {
+        "type": "triangle",
+        "from": 220,
+        "to": 660,
+        "peak": 0.3,
+        "decay": 0.18,
+        "delay": 0
+      },
+      {
+        "type": "sawtooth",
+        "from": 110,
+        "to": 55,
+        "peak": 0.25,
+        "decay": 0.3,
+        "delay": 0.42
+      }
+    ],
+    "pass": [
+      {
+        "type": "square",
+        "from": 523,
+        "to": 523,
+        "peak": 0.16,
+        "decay": 0.12,
+        "delay": 0
+      },
+      {
+        "type": "square",
+        "from": 659,
+        "to": 659,
+        "peak": 0.16,
+        "decay": 0.12,
+        "delay": 0.07
+      },
+      {
+        "type": "square",
+        "from": 784,
+        "to": 784,
+        "peak": 0.16,
+        "decay": 0.12,
+        "delay": 0.14
+      },
+      {
+        "type": "square",
+        "from": 1047,
+        "to": 1047,
+        "peak": 0.16,
+        "decay": 0.2,
+        "delay": 0.21
+      }
+    ],
+    "dead": [
+      {
+        "type": "sawtooth",
+        "from": 330,
+        "to": 70,
+        "peak": 0.35,
+        "decay": 0.7,
+        "delay": 0
+      }
+    ]
+  },
+  "vibration": {
+    "buzz": [
+      25
+    ],
+    "dead": [
+      60,
+      40,
+      160
+    ]
+  },
+  "shot": {
+    "noiseSeconds": 0.5,
+    "attack": 0.002,
+    "crackDecay": 0.12,
+    "bodyDecay": 0.35,
+    "thumpFrom": 150,
+    "thumpTo": 38,
+    "thumpPeak": 1,
+    "powerBoost": 0.5,
+    "lowpassBase": 2400,
+    "lowpassRange": 3000,
+    "vibrateBase": 40,
+    "vibratePower": 90,
+    "vibrateGap": 30,
+    "tailBase": 20,
+    "tailPower": 40
+  }
+}
