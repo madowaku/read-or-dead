@@ -28,10 +28,13 @@ import {
   shotLabel,
   type ReplayMeta,
 } from "./replay/compose";
-import { RecordingError, play, record, supportedVideoType, type Drawer, type PlaybackHandle } from "./replay/player";
+import { clipSoundCues, type SoundCue } from "./replay/clip";
+import type { EncodedVideo } from "./replay/encode";
+import { RecordingError, canMakeVideo } from "./replay/support";
+import { play, type Drawer, type PlaybackHandle } from "./replay/player";
 import { canvasToBlob, copyText, shareOrDownload, siteUrl, xIntentUrl } from "./replay/share";
-import { frameAt, replayDuration } from "./replay/timeline";
-import { clearGame, forgetPlayed, loadGame, loadPlayed, markPlayed, saveGame } from "./storage";
+import { frameAt, replayDuration, replaySoundCues } from "./replay/timeline";
+import { clearGame, forgetPlayed, loadGame, loadPlayed, loadVideoSound, markPlayed, saveGame, saveVideoSound } from "./storage";
 import { startAim, type AimController } from "./ui/aim";
 import { button, h, once } from "./ui/dom";
 import { createReticle, createStage, type Point } from "./ui/stage";
@@ -58,6 +61,21 @@ const BURST_BLEED = 0.5;
 const METER_SPAN = 0.3;
 const METER_BOX_PX = 72;
 const HASHTAG = "#READORDEAD";
+const BYTES_PER_KB = 1024;
+const BYTES_PER_MB = BYTES_PER_KB * BYTES_PER_KB;
+const MB_DIGITS = 1;
+
+/** 書き出し用の絵と音の指定。canvas は書き出し専用に毎回作る。 */
+interface VideoPlan {
+  readonly draw: Drawer;
+  readonly durationMs: number;
+  readonly cues: readonly SoundCue[];
+}
+
+function describeVideo(video: EncodedVideo): string {
+  const size = (video.blob.size / BYTES_PER_MB).toFixed(MB_DIGITS);
+  return `${size}MB・${video.hasAudio ? "音あり" : "音なし"}`;
+}
 
 // 別解の区切り。読点・カンマ・改行・スラッシュ。"ねこ、ネコ/cat" → ["ねこ","ネコ","cat"]; "ねこ" は 1 件のまま。
 // https://regex101.com/?flavor=javascript&regex=%5B%E3%80%81%2C%EF%BC%8C%5Cn%2F%EF%BC%8F%5D&flags=g&testString=%E3%81%AD%E3%81%93%E3%80%81%E3%83%8D%E3%82%B3%2Fcat%0A%E3%81%AD%E3%81%93
@@ -660,12 +678,17 @@ export class App {
       if (canvas.isConnected && this.playback === playback && !actions.isRecording()) void loop();
     };
     const actions = this.shareActions({
-      recordVideo: () => record(canvas, draw, SHOT_CLIP_MS, () => DEFAULT_SPEED),
+      planVideo: (target) => {
+        // プレビューとは別の描画担当を作る（作業用キャンバスを取り合わないように）
+        const exporter = createShotClipComposer(source, before, shot, meta);
+        return { draw: (elapsed) => exporter(target, elapsed), durationMs: SHOT_CLIP_MS, cues: clipSoundCues(powerLevel(shot.radius)) };
+      },
       poster: () => composeShotCard(source, before, shot, meta),
       filename: `read-or-dead-shot-${shot.turnNumber}`,
       text,
       back: () => this.showHandoff(),
       backLabel: "戻る",
+      resume: () => void loop(),
     });
 
     this.mount(
@@ -678,33 +701,65 @@ export class App {
     void loop();
   }
 
-  /** 動画で共有・画像で保存・投稿文コピー・X で投稿 */
+  /** 動画で共有（音あり／なし）・画像で保存・投稿文コピー・X で投稿 */
   private shareActions(options: {
-    readonly recordVideo: () => ReturnType<typeof record>;
+    readonly planVideo: (target: HTMLCanvasElement) => VideoPlan;
     readonly poster: () => HTMLCanvasElement;
     readonly filename: string;
     readonly text: string;
     readonly back: () => void;
     readonly backLabel: string;
+    /** 書き出しの間止めていたプレビューを再開する */
+    readonly resume: () => void;
   }): { readonly element: HTMLElement; readonly isRecording: () => boolean } {
-    const busy = { recording: false };
-    const videoType = supportedVideoType();
-    const fullText = `${options.text}\n${siteUrl()}`;
+    const busy = { recording: false, sound: loadVideoSound() };
+    const videoAvailable = canMakeVideo();
+    const fullText = `${options.text}
+${siteUrl()}`;
     const videoButton = button("動画で共有", () => saveVideo());
+    const soundButtons = ([true, false] as const).map((withSound) => {
+      const soundButton = button(withSound ? "音あり" : "音なし", () => {
+        busy.sound = withSound;
+        saveVideoSound(withSound);
+        soundButtons.forEach((other, index) => other.setAttribute("aria-pressed", String(!index === withSound)));
+      }, "ghost");
+      soundButton.classList.add("speed");
+      soundButton.setAttribute("aria-pressed", String(withSound === busy.sound));
+      return soundButton;
+    });
+    const imageButton = button("画像で保存", () => saveImage(), videoAvailable ? "ghost" : "primary");
+    const lockable = [videoButton, imageButton, ...soundButtons];
+    const lock = (locked: boolean): void => lockable.forEach((control) => control.toggleAttribute("disabled", locked));
+
     const saveVideo = this.guard(async () => {
       if (busy.recording) return;
       busy.recording = true;
-      videoButton.disabled = true;
+      lock(true);
       videoButton.textContent = "動画を作っています…";
       this.playback?.stop();
       try {
-        const recording = await options.recordVideo();
-        const outcome = await shareOrDownload(recording.blob, `${options.filename}.${recording.extension}`, fullText);
-        if (outcome === "downloaded") this.toast(`動画を保存しました（${Math.ceil(recording.blob.size / MS_PER_SECOND / MS_PER_SECOND)}MB）`);
+        // 書き出し処理（mediabunny）は重いので、使うときに初めて読み込む
+        const { encodeVideo } = await import("./replay/encode");
+        const target = createFrameCanvas();
+        const plan = options.planVideo(target);
+        const video = await encodeVideo({
+          canvas: target,
+          draw: plan.draw,
+          durationMs: plan.durationMs,
+          cues: busy.sound ? plan.cues : null,
+          onProgress: (ratio) => {
+            videoButton.textContent = ratio ? `動画を作っています… ${Math.round(ratio * PERCENT)}%` : "録画しています…";
+          },
+        });
+        videoButton.textContent = "共有しています…";
+        const outcome = await shareOrDownload(video.blob, `${options.filename}.${video.extension}`, fullText);
+        if (outcome === "downloaded") this.toast(`動画を保存しました（${describeVideo(video)}）`);
+        if (outcome === "shared") this.toast(`動画を共有しました（${describeVideo(video)}）`);
       } finally {
         busy.recording = false;
-        videoButton.disabled = false;
+        lock(false);
         videoButton.textContent = "動画で共有";
+        if (videoButton.isConnected) options.resume();
       }
     });
     const saveImage = this.guard(async () => {
@@ -722,8 +777,11 @@ export class App {
       attrs: { href: xIntentUrl(options.text, siteUrl()), target: "_blank", rel: "noopener" },
     });
     const element = h("div", { class: "actions" }, [
-      videoType ? videoButton : h("p", { class: "note", text: "この端末では動画を作れないため、画像で保存できます。" }),
-      button("画像で保存", saveImage, videoType ? "ghost" : "primary"),
+      videoAvailable
+        ? h("div", { class: "speed-row", attrs: { role: "group", "aria-label": "動画の効果音" } }, [h("span", { class: "speed-label", text: "動画の音" }), ...soundButtons])
+        : null,
+      videoAvailable ? videoButton : h("p", { class: "note", text: "この端末では動画を作れないため、画像で保存できます。" }),
+      imageButton,
       h("div", { class: "actions-row" }, [button("投稿文をコピー", copy, "ghost"), xLink]),
       h("p", { class: "note", text: "X に直接添付できないときは、保存した動画を X の投稿画面で添えてください。" }),
       button(options.backLabel, options.back, "ghost"),
@@ -782,12 +840,22 @@ export class App {
     const draw: Drawer = (elapsed) => composer(canvas, frameAt(result.shots, elapsed));
     const duration = replayDuration(result.shots.length);
     const actions = this.shareActions({
-      recordVideo: () => record(canvas, draw, duration, () => this.speed),
+      planVideo: (target) => {
+        // 書き出しは選んでいる再生速度で。時間も効果音もその速度に合わせて縮める
+        const speed = this.speed;
+        const exporter = createComposer(source, meta);
+        return {
+          draw: (elapsed) => exporter(target, frameAt(result.shots, elapsed * speed)),
+          durationMs: duration / speed,
+          cues: replaySoundCues(result.shots.length).map((cue) => ({ ...cue, atMs: cue.atMs / speed })),
+        };
+      },
       poster: () => composePoster(source, result.shots, meta),
       filename: "read-or-dead",
       text: `READ OR DEAD 💀 ${result.survivors}人が読んで${result.shots.length}発で力尽きた。何発目で分かった？ ${HASHTAG}`,
       back: () => this.showEnd(),
       backLabel: "結果に戻る",
+      resume: () => restart(),
     });
 
     const restart = (): void => {

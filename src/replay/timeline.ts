@@ -2,6 +2,7 @@
 // 純粋関数のみ。描画は compose.ts が担う。
 
 import type { Shot } from "../game/types";
+import type { SoundCue } from "./clip";
 
 export const HOLD_START_MS = 1400;
 export const STEP_MS = 650;
@@ -55,4 +56,11 @@ export function frameAt(shots: readonly Shot[], elapsedMs: number): ReplayFrame 
   const afterRestore = restoring - total * step;
   if (afterRestore < HOLD_ORIGINAL_MS) return { phase: "original", shots: [], remaining: 0 };
   return { phase: "question", shots: [], remaining: 0 };
+}
+
+/** 逆再生の効果音：穴が塞がり始めるたびに巻き戻し音、問いかけで締め */
+export function replaySoundCues(shotCount: number): readonly SoundCue[] {
+  const step = stepMs(shotCount);
+  const rewinds = Array.from({ length: shotCount }, (_, index): SoundCue => ({ kind: "rewind", atMs: HOLD_START_MS + index * step, power: 0 }));
+  return [...rewinds, { kind: "finale", atMs: HOLD_START_MS + shotCount * step + HOLD_ORIGINAL_MS, power: 0 }];
 }

@@ -79,6 +79,42 @@
         "decay": 0.7,
         "delay": 0
       }
+    ],
+    "finale": [
+      {
+        "type": "square",
+        "from": 659,
+        "to": 659,
+        "peak": 0.14,
+        "decay": 0.09,
+        "delay": 0
+      },
+      {
+        "type": "square",
+        "from": 880,
+        "to": 880,
+        "peak": 0.14,
+        "decay": 0.09,
+        "delay": 0.1
+      },
+      {
+        "type": "triangle",
+        "from": 988,
+        "to": 1319,
+        "peak": 0.22,
+        "decay": 0.32,
+        "delay": 0.2
+      }
+    ],
+    "rewind": [
+      {
+        "type": "sine",
+        "from": 1400,
+        "to": 700,
+        "peak": 0.12,
+        "decay": 0.06,
+        "delay": 0
+      }
     ]
   },
   "vibration": {
@@ -107,5 +143,21 @@
     "vibrateGap": 30,
     "tailBase": 20,
     "tailPower": 40
+  },
+  "impact": {
+    "debrisCount": 4,
+    "debrisGap": 0.045,
+    "debrisDecay": 0.05,
+    "debrisPeak": 0.55,
+    "bandpass": 1800,
+    "bandpassQ": 0.9,
+    "rumbleFrom": 70,
+    "rumbleTo": 28,
+    "rumblePeak": 0.7,
+    "rumbleDecay": 0.5
+  },
+  "render": {
+    "sampleRate": 48000,
+    "channels": 2
   }
 }

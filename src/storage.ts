@@ -81,3 +81,25 @@ export function forgetPlayed(keys: readonly string[]): void {
     console.warn("forgetPlayed failed", err);
   }
 }
+
+// ---- 共有動画に効果音を入れるか ----
+
+const VIDEO_SOUND_KEY = "read-or-dead:video-sound";
+const SOUND_OFF = "off";
+
+export function loadVideoSound(): boolean {
+  try {
+    return localStorage.getItem(VIDEO_SOUND_KEY) !== SOUND_OFF;
+  } catch (err) {
+    console.warn("loadVideoSound failed", err);
+    return true;
+  }
+}
+
+export function saveVideoSound(enabled: boolean): void {
+  try {
+    localStorage.setItem(VIDEO_SOUND_KEY, enabled ? "on" : SOUND_OFF);
+  } catch (err) {
+    console.warn("saveVideoSound failed", err);
+  }
+}
