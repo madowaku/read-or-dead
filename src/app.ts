@@ -74,7 +74,9 @@ interface VideoPlan {
 
 function describeVideo(video: EncodedVideo): string {
   const size = (video.blob.size / BYTES_PER_MB).toFixed(MB_DIGITS);
-  return `${size}MB・${video.hasAudio ? "音あり" : "音なし"}`;
+  // 端末ごとの書き出し方法の違いを確かめられるよう、方法も出す
+  const method = video.method === "webcodecs" ? "高速書き出し" : "録画";
+  return `${size}MB・${video.hasAudio ? "音あり" : "音なし"}・${method}・${video.extension.toUpperCase()}`;
 }
 
 // 別解の区切り。読点・カンマ・改行・スラッシュ。"ねこ、ネコ/cat" → ["ねこ","ネコ","cat"]; "ねこ" は 1 件のまま。
