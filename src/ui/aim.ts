@@ -1,72 +1,105 @@
-// 揺れる照準。指でなぞった位置を狙うが、照準はその周りを小さく漂う。
-// 動かした直後は大きく揺れ、落ち着くまで待つほど正確になる（急いで撃つと外れる）。
+// 横→縦の 2 回タップ照準。
+// 1 回目：左右に往復する縦線をタップで止めて横位置を決める。
+// 2 回目：上下に往復する横線をタップで止めると、その交点に発射する。
+// 画面のどこをタップしてもよい（スペース / Enter でも可）。
 
-import fx from "../fx/fx.json";
-import { placeReticle, toNormalized, type Point } from "./stage";
+import { LOCK_GUARD_MS, sweepPosition, traverseMsFor } from "../game/sweep";
+import { h } from "./dom";
+import { placeReticle, type Point } from "./stage";
 
-const TUNING = fx.aim;
-const HALF = 0.5;
-const CENTER: Point = { x: HALF, y: HALF };
+const PERCENT = 100;
+
+export type AimStep = "x" | "y" | "done";
 
 export interface AimController {
-  /** 今この瞬間の照準の位置（揺れを含む） */
-  readonly current: () => Point;
   readonly stop: () => void;
 }
 
-function clampUnit(value: number): number {
-  return Math.min(1, Math.max(0, value));
+export interface AimOptions {
+  /** タップを受け付ける範囲（ふつうは画面全体） */
+  readonly tapArea: HTMLElement;
+  /** 照準の線を重ねる画像の台 */
+  readonly stage: HTMLElement;
+  readonly reticle: HTMLElement;
+  readonly radius: number;
+  /** 手順が進むたびに呼ばれる（案内文の切り替え用） */
+  readonly onStep: (step: AimStep) => void;
+  /** 2 回目のタップで呼ばれる */
+  readonly onFire: (point: Point) => void;
+  readonly random?: () => number;
 }
 
-/** 2 つの正弦波を混ぜた、規則的に見えにくい揺れ（-1〜1） */
-function wave(t: number, slow: number, fast: number): number {
-  return (Math.sin(t * slow) + TUNING.mixSecond * Math.sin(t * fast)) / (1 + TUNING.mixSecond);
-}
+export function startSweepAim(options: AimOptions): AimController {
+  const random = options.random ?? Math.random;
+  const traverseMs = traverseMsFor(options.radius);
+  const lineX = h("div", { class: "sweep-line sweep-line-x", attrs: { "aria-hidden": "true" } });
+  const lineY = h("div", { class: "sweep-line sweep-line-y", attrs: { "aria-hidden": "true" } });
+  options.stage.append(lineX, lineY);
 
-export function startAim(stage: HTMLElement, canvas: HTMLCanvasElement, reticle: HTMLElement, onAim: () => void): AimController {
-  const state = { target: CENTER, position: CENTER, movedAt: performance.now(), frameId: 0, pressed: false };
+  const state = {
+    step: "x" as AimStep,
+    startedAt: performance.now(),
+    // 毎回同じ位置から動くと覚えられてしまうので、動き出す位置をずらす
+    startAt: random(),
+    x: 0,
+    y: 0,
+    lockedAt: 0,
+    frameId: 0,
+  };
 
-  const moveTo = (event: PointerEvent): void => {
-    state.target = toNormalized(canvas, event.clientX, event.clientY);
-    state.movedAt = performance.now();
-    onAim();
+  const render = (now: number): void => {
+    const position = sweepPosition(now - state.startedAt, traverseMs, state.startAt);
+    if (state.step === "x") state.x = position;
+    if (state.step === "y") state.y = position;
+    lineX.style.setProperty("left", `${state.x * PERCENT}%`);
+    lineY.style.setProperty("top", `${state.y * PERCENT}%`);
+    lineY.classList.toggle("is-active", state.step !== "x");
+    lineX.classList.toggle("is-locked", state.step !== "x");
+    if (state.step !== "x") placeReticle(options.reticle, { x: state.x, y: state.y });
+    if (state.step !== "done") state.frameId = requestAnimationFrame(render);
   };
-  const onDown = (event: PointerEvent): void => {
-    state.pressed = true;
-    stage.setPointerCapture(event.pointerId);
-    moveTo(event);
-  };
-  const onMove = (event: PointerEvent): void => {
-    if (state.pressed) moveTo(event);
-  };
-  const onUp = (): void => {
-    state.pressed = false;
-  };
-  stage.addEventListener("pointerdown", onDown);
-  stage.addEventListener("pointermove", onMove);
-  stage.addEventListener("pointerup", onUp);
-  stage.addEventListener("pointercancel", onUp);
 
-  const tick = (now: number): void => {
-    const settle = Math.max(0, 1 - (now - state.movedAt) / TUNING.settleMs);
-    const amplitude = TUNING.baseAmplitude + TUNING.moveAmplitude * settle;
-    state.position = {
-      x: clampUnit(state.target.x + amplitude * wave(now, TUNING.freqX1, TUNING.freqX2)),
-      y: clampUnit(state.target.y + amplitude * wave(now, TUNING.freqY1, TUNING.freqY2)),
-    };
-    placeReticle(reticle, state.position);
-    state.frameId = requestAnimationFrame(tick);
+  const lock = (): void => {
+    const now = performance.now();
+    if (state.step === "done" || now - state.lockedAt < LOCK_GUARD_MS) return;
+    render(now);
+    state.lockedAt = now;
+    if (state.step === "x") {
+      state.step = "y";
+      state.startedAt = now;
+      state.startAt = random();
+      options.onStep("y");
+      return;
+    }
+    state.step = "done";
+    cancelAnimationFrame(state.frameId);
+    options.onStep("done");
+    options.onFire({ x: state.x, y: state.y });
   };
-  state.frameId = requestAnimationFrame(tick);
+
+  const onPointer = (event: PointerEvent): void => {
+    // ボタンやリンクの操作は照準のタップとして扱わない
+    if (event.target instanceof Element && event.target.closest("button, a")) return;
+    event.preventDefault();
+    lock();
+  };
+  const onKey = (event: KeyboardEvent): void => {
+    if (event.key !== " " && event.key !== "Enter") return;
+    event.preventDefault();
+    lock();
+  };
+  options.tapArea.addEventListener("pointerdown", onPointer);
+  window.addEventListener("keydown", onKey);
+  options.onStep("x");
+  state.frameId = requestAnimationFrame(render);
 
   return {
-    current: (): Point => state.position,
     stop: (): void => {
       cancelAnimationFrame(state.frameId);
-      stage.removeEventListener("pointerdown", onDown);
-      stage.removeEventListener("pointermove", onMove);
-      stage.removeEventListener("pointerup", onUp);
-      stage.removeEventListener("pointercancel", onUp);
+      options.tapArea.removeEventListener("pointerdown", onPointer);
+      window.removeEventListener("keydown", onKey);
+      lineX.remove();
+      lineY.remove();
     },
   };
 }

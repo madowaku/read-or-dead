@@ -35,9 +35,9 @@ import { play, type Drawer, type PlaybackHandle } from "./replay/player";
 import { canvasToBlob, copyText, shareOrDownload, siteUrl, xIntentUrl } from "./replay/share";
 import { frameAt, replayDuration, replaySoundCues } from "./replay/timeline";
 import { clearGame, forgetPlayed, loadGame, loadPlayed, loadVideoSound, markPlayed, saveGame, saveVideoSound } from "./storage";
-import { startAim, type AimController } from "./ui/aim";
+import { startSweepAim, type AimController, type AimStep } from "./ui/aim";
 import { button, h, once } from "./ui/dom";
-import { createReticle, createStage, type Point } from "./ui/stage";
+import { createReticle, createStage, revealHole, type Point } from "./ui/stage";
 
 const TOAST_MS = 2800;
 const PREVIEW_DEBOUNCE_MS = 250;
@@ -90,6 +90,12 @@ const POOLS: Readonly<Record<Pool, { readonly label: string; readonly questions:
   word: { label: "ことば・短文", questions: WORD_QUESTIONS },
   silhouette: { label: "シルエット", questions: SILHOUETTE_QUESTIONS },
   all: { label: "ぜんぶ", questions: ALL_QUESTIONS },
+};
+
+const AIM_STEP_LABEL: Readonly<Record<AimStep, string>> = {
+  x: "① 動く縦線を、狙う横位置でタップ",
+  y: "② 動く横線を、狙う縦位置でタップで発射！",
+  done: "BANG!",
 };
 
 const RANK_TITLE: Readonly<Record<PowerRank, string>> = {
@@ -266,7 +272,8 @@ export class App {
       "1台のスマホを順番に回して遊びます。",
       "画像が出たら、読めた瞬間に「わかった！」。早く押すほど弾が大きくなります（0秒で12%、15秒で6%）。",
       "それから答えを入力。チャンスは1回。入力の速さは弾の大きさに関係ありません。",
-      "正解したら、画像をなぞって狙い、BANG!。照準は少し揺れます。動かした直後は特に揺れるので、落ち着いてから撃つのがコツ。",
+      "正解したら撃つ番。左右に動く縦線をタップで止めて横位置を決め、次に上下に動く横線をタップで止めると発射。大きい弾ほど線が速く動きます。",
+      "撃たれた所は白くなって、最初からそうだったように見えます。「犬」の点を消して「大」と読ませる、みたいな意地悪な一発を狙おう。",
       "撃ったら次の人へ。その一発は短い動画にしてすぐ共有できます。",
       "誰かが読めなかったら終了。消えた絵が元に戻るリプレイで答え合わせ。",
     ];
@@ -425,7 +432,7 @@ export class App {
     const token = this.requireToken();
     const view = relay.publicView();
     const meter = createMeter();
-    const stage = createStage(source, view.shots);
+    const stage = createStage(source, view.shots, "paper");
     const buzzed = view.buzzedAt !== null && view.shownAt !== null;
 
     const giveUp = (): void => {
@@ -563,20 +570,20 @@ export class App {
     const power = view.power ?? MIN_RADIUS;
     const rank = rankOf(power);
 
-    const stage = createStage(source, view.shots);
+    const stage = createStage(source, view.shots, "paper");
     const reticle = createReticle(power);
     stage.element.append(reticle);
     stage.element.classList.add("is-aiming");
     const burstCanvas = h("canvas", { class: "burst-canvas", attrs: { "aria-hidden": "true" } });
     const wrap = h("div", { class: "stage-wrap" }, [stage.element, burstCanvas]);
-    const bangButton = button("BANG!", () => fire(), "primary");
-    bangButton.classList.add("btn-bang");
-    const aim: AimController = startAim(stage.element, stage.canvas, reticle, () => undefined);
+    const stepLabel = h("p", { class: "aim-step", attrs: { "aria-live": "polite" } });
+    const tapPad = h("div", { class: "tap-pad", text: "TAP!", attrs: { "aria-hidden": "true" } });
 
+    const target: { point: Point | null } = { point: null };
     const fire = once(
       this.guard(async () => {
-        const point: Point = aim.current();
-        bangButton.disabled = true;
+        const point = target.point;
+        if (!point) return;
         const shot = relay.fireShot(token, point.x, point.y);
         this.token = null;
         this.persist();
@@ -592,16 +599,31 @@ export class App {
 
     const view$ = screen("shoot", [
       h("p", { class: `power-banner power-${rank}` }, [h("span", { class: "power-title", text: RANK_TITLE[rank] }), h("span", { class: "power-detail", text: `弾 ${percent(power)}` })]),
-      h("p", { class: "lead", text: "画像をなぞって狙う。照準は少し揺れます。" }),
+      stepLabel,
       wrap,
-      h("div", { class: "actions" }, [bangButton]),
+      tapPad,
     ]);
+    const aim: AimController = startSweepAim({
+      tapArea: view$,
+      stage: stage.element,
+      reticle,
+      radius: power,
+      onStep: (step) => {
+        stepLabel.textContent = AIM_STEP_LABEL[step];
+        tapPad.textContent = step === "done" ? "BANG!" : "TAP!";
+        if (step === "y") playBuzz();
+      },
+      onFire: (point) => {
+        target.point = point;
+        fire();
+      },
+    });
     this.mount(view$);
     // mount() は前の画面の後片付けを呼ぶので、この画面の後片付けは mount の後に登録する
     this.cleanup = (): void => aim.stop();
   }
 
-  /** 着弾：穴が広がる・衝撃波と破片・画面の揺れ・BANG! の文字 */
+  /** 着弾：穴が広がる・一瞬だけ穴を見せる・衝撃波と破片・画面の揺れ・BANG! の文字 */
   private animateImpact(view: HTMLElement, canvas: HTMLCanvasElement, burstCanvas: HTMLCanvasElement, source: HTMLCanvasElement, before: readonly Shot[], shot: Shot): void {
     const burst = shotBurst(shot);
     const stageRect = canvas.getBoundingClientRect();
@@ -616,6 +638,8 @@ export class App {
     view.style.setProperty("--shake", String(powerLevel(shot.radius)));
     if (!prefersReducedMotion()) view.classList.add("is-shaking");
     view.append(h("p", { class: `bang-stamp bang-${rankOf(shot.radius)}`, text: "BANG!", attrs: { "aria-hidden": "true" } }));
+    // 当たった手応えのため、一瞬だけ穴を市松模様で見せてから白になじませる
+    if (canvas.parentElement) revealHole(canvas.parentElement, shot, shot.radius, fx.hole.revealMs);
 
     const startedAt = performance.now();
     const frame = (now: number): void => {
