@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Shot } from "../game/types";
-import { CARD_AT, FLASH_MS, IMPACT_AT, SHOT_CLIP_MS, clipFrameAt, clipSoundCues } from "./clip";
+import { AIM_X_MS, AIM_Y_MS, CARD_AT, FLASH_MS, HOLE_REVEAL_MS, IMPACT_AT, SHOT_CLIP_MS, clipFrameAt, clipSoundCues } from "./clip";
 
 const FPS = 24;
 const MS_PER_SECOND = 1000;
@@ -49,12 +49,21 @@ describe("clipFrameAt（共有用 1 発クリップ）", () => {
     });
   });
 
-  it("照準は着弾前だけ出て、着弾の瞬間に着弾点へ届く", () => {
-    expect(clipFrameAt(BEFORE, SHOT, 0).reticle).not.toBeNull();
-    const last = clipFrameAt(BEFORE, SHOT, IMPACT_AT - EPSILON).reticle;
+  it("照準は横→縦の順に決まり、着弾の瞬間に着弾点へ届く", () => {
+    expect(clipFrameAt(BEFORE, SHOT, 0).aim?.y).toBeNull();
+    expect(clipFrameAt(BEFORE, SHOT, AIM_X_MS - EPSILON).aim?.y).toBeNull();
+    expect(clipFrameAt(BEFORE, SHOT, AIM_X_MS + AIM_Y_MS).aim?.x).toBeCloseTo(SHOT.x);
+    const last = clipFrameAt(BEFORE, SHOT, IMPACT_AT - EPSILON).aim;
     expect(last?.x).toBeCloseTo(SHOT.x);
     expect(last?.y).toBeCloseTo(SHOT.y);
-    expect(clipFrameAt(BEFORE, SHOT, IMPACT_AT).reticle).toBeNull();
+    expect(clipFrameAt(BEFORE, SHOT, IMPACT_AT).aim).toBeNull();
+  });
+
+  it("新しい穴は着弾直後だけ市松模様で見せ、あとは白", () => {
+    expect(clipFrameAt(BEFORE, SHOT, IMPACT_AT - EPSILON).holeReveal).toBe(0);
+    expect(clipFrameAt(BEFORE, SHOT, IMPACT_AT).holeReveal).toBe(1);
+    expect(clipFrameAt(BEFORE, SHOT, IMPACT_AT + HOLE_REVEAL_MS).holeReveal).toBe(0);
+    expect(clipFrameAt(BEFORE, SHOT, SHOT_CLIP_MS).holeReveal).toBe(0);
   });
 
   it("着弾はフラッシュで見せ、すぐ消える", () => {

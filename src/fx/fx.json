@@ -19,16 +19,12 @@
     "toneSpark": 0.8
   },
   "hole": {
-    "growMs": 160
+    "growMs": 160,
+    "revealMs": 380
   },
-  "aim": {
-    "baseAmplitude": 0.012,
-    "moveAmplitude": 0.035,
-    "settleMs": 700,
-    "freqX1": 0.0011,
-    "freqX2": 0.0027,
-    "freqY1": 0.0013,
-    "freqY2": 0.0031,
-    "mixSecond": 0.45
+  "sweep": {
+    "traverseMsWeak": 1500,
+    "traverseMsPower": 850,
+    "lockGuardMs": 200
   }
 }
