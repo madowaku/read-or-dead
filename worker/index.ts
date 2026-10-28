@@ -18,9 +18,10 @@ import {
 } from "../src/online/protocol";
 import { renderCard } from "./card";
 import { randomBase62, randomHex, sha256 } from "./ids";
+import { Limiter, TREE_LIMIT_GLOBAL, TREE_LIMIT_PER_IP, WINDOW_MS } from "./limiter";
 import { Tree, type Outcome } from "./tree";
 
-export { Tree };
+export { Limiter, Tree };
 
 const POOLS: Readonly<Record<OnlinePool, readonly Question[]>> = {
   kanji: KANJI_QUESTIONS,
@@ -131,10 +132,11 @@ export default {
     };
 
     if (request.method === "POST" && ROUTES.create.test(url)) {
-      // SNS で広がっても木が際限なく増えないよう、作る回数だけを IP ごとに抑える
+      // SNS で広がっても木が際限なく増えないよう、作る回数だけを IP ごとと全体で抑える
+      const limiter = (key: string): DurableObjectStub<Limiter> => ctx.exports.Limiter.get(ctx.exports.Limiter.idFromName(key));
       const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
-      const { success } = await env.TREE_LIMITER.limit({ key: ip });
-      if (!success) return fail("rate-limited");
+      if (!(await limiter(`ip:${ip}`).take(TREE_LIMIT_PER_IP, WINDOW_MS))) return fail("rate-limited");
+      if (!(await limiter("global").take(TREE_LIMIT_GLOBAL, WINDOW_MS))) return fail("rate-limited");
       const body = await readBody(request);
       const question = pickQuestion(isPool(body.pool) ? body.pool : "all");
       if (!question) return fail("bad-request");

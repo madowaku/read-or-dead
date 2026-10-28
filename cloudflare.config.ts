@@ -1,10 +1,6 @@
 import { bindings, defineConfig, exports } from "cf/config";
 import * as entrypoint from "./worker/index.ts" with { type: "cf-worker" };
 
-/** 新しい木を作れる回数（IP ごと、TREE_LIMIT_PERIOD 秒あたり） */
-const TREE_LIMIT = 5;
-const TREE_LIMIT_PERIOD = 60;
-
 export default defineConfig({
   worker: {
     name: "read-or-dead",
@@ -19,11 +15,11 @@ export default defineConfig({
     },
     env: {
       ASSETS: bindings.assets(),
-      // 新しい木を作る回数の上限。挑戦・回答・射撃には掛けない
-      TREE_LIMITER: bindings.rateLimit({ namespace: "1001", simple: { limit: TREE_LIMIT, period: TREE_LIMIT_PERIOD } }),
     },
     exports: {
       Tree: exports.durableObject({ storage: "sqlite" }),
+      // 新しい木を作る回数の上限（worker/limiter.ts）。挑戦・回答・射撃には掛けない
+      Limiter: exports.durableObject({ storage: "sqlite" }),
     },
   },
 });
