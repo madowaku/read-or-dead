@@ -247,6 +247,25 @@ function readyIntro(turnNumber: number): HTMLElement {
   ]);
 }
 
+/** 投稿文。短く、答えは書かない */
+function postText(turnNumber: number, buzzMs: number | null): string {
+  const time = buzzMs === null ? "" : `（⚡${seconds(buzzMs)}）`;
+  return `${turnLabel(turnNumber)} 突破${time}\n次はあなた。読める？ ${HASHTAG}`;
+}
+
+/** リンクカードと同じ画像（撃たれた穴の位置だけ）。SNS で見たカードとつながるように */
+function cardImage(treeId: string, nodeId: string): HTMLElement {
+  return h("img", {
+    class: "card-preview",
+    attrs: { src: `/card/${treeId}/${nodeId}.png`, alt: "撃たれた穴の位置", width: "1200", height: "630", decoding: "async" },
+  });
+}
+
+/** 目立たせない操作（戻る・おまけ） */
+function textButton(label: string, onClick: () => void): HTMLButtonElement {
+  return h("button", { class: "text-button", text: label, attrs: { type: "button" }, on: { click: onClick } });
+}
+
 /** 画面を駆け抜ける文字 */
 function sweep(text: string, direction: "left" | "right", variant: string): HTMLElement {
   return h("p", { class: `sweep sweep-${direction} sweep-${variant}`, attrs: { "aria-hidden": "true" } }, [h("span", { text })]);
@@ -1106,7 +1125,7 @@ ${options.url}`;
     );
   }
 
-  /** 挑戦ページ（/r/<木>/<ノード>）。問題の中身はまだ見せない */
+  /** 挑戦ページ（/r/<木>/<ノード>）。SNS から来た人が最初に見る。問題の中身はまだ見せない */
   private async showChallenge(treeId: string, nodeId: string): Promise<void> {
     this.showLoading("読み込んでいます…");
     const node = await fetchNode(treeId, nodeId).catch((err: unknown) => {
@@ -1120,7 +1139,7 @@ ${options.url}`;
     if (mine && mine.status !== "claimed") {
       const saved = savedAttempt(treeId);
       if (!saved || saved.attemptId !== mine.attemptId) {
-        this.showOnlineMessage("挑戦済み", "この問題にはもう挑戦しました。挑戦できるのは1つの問題につき1回だけです。");
+        this.showOnlineMessage("挑戦済み", "この問題には1回挑戦できます。もう挑戦しました。");
         return;
       }
       await this.resumeOnline(treeId, saved);
@@ -1136,19 +1155,21 @@ ${options.url}`;
         await this.startOnline(treeId, saved, turnNumber);
       }),
     );
+    const steps = ["読めたらタップ", "答える", "撃って次へ"];
     this.mount(
-      screen("receive", [
-        h("p", { class: "turn-kicker", text: "CHALLENGE" }),
-        h("p", { class: "turn-number" }, [h("span", { class: "turn-digits", text: String(turnNumber) }), h("span", { class: "turn-unit", text: "人目" })]),
-        h("p", { class: "lead", text: node.depth ? `${node.depth}発撃たれた画像に挑戦。` : "まだ無傷の画像に挑戦。" }),
-        h("p", {
-          class: "note",
-          text: `挑戦は1回だけ。押すと READY? のあと画像が出て時計が動きます。読めた瞬間に「わかった！」。答えるまでの制限時間は${ANSWER_LIMIT_MS / MS_PER_SECOND}秒。`,
-        }),
+      screen("challenge", [
+        h("p", { class: "kicker", text: `${turnLabel(turnNumber)}｜${node.depth ? `${node.depth}発撃たれた画像` : "まだ無傷の画像"}` }),
+        h("h2", { class: "posted-title", text: "あなたは読める？" }),
+        cardImage(treeId, nodeId),
+        h(
+          "ol",
+          { class: "steps" },
+          steps.map((step) => h("li", { text: step })),
+        ),
         h("div", { class: "actions" }, [
           button("挑戦する", challenge),
-          button("遊び方", () => this.showHowTo(), "ghost"),
-          button("タイトルへ", () => this.showTitle(), "ghost"),
+          h("p", { class: "fine", text: `1回だけ・制限時間${ANSWER_LIMIT_MS / MS_PER_SECOND}秒` }),
+          h("div", { class: "text-links" }, [textButton("遊び方", () => this.showHowTo()), textButton("タイトルへ", () => this.showTitle())]),
         ]),
       ]),
     );
@@ -1233,7 +1254,7 @@ ${options.url}`;
     };
   }
 
-  /** 撃ったあと：自分の一発の挑戦 URL を投稿する */
+  /** 撃ったあと：自分の一発の挑戦 URL を投稿する。主役はリンクカードと「X で投稿」の 1 つだけ */
   private showPosted(run: OnlineRun): void {
     const { state } = run;
     const shot = state.shot;
@@ -1243,14 +1264,12 @@ ${options.url}`;
       return;
     }
     const url = new URL(challengePath(run.treeId, childId), location.origin).href;
-    const nextTurn = state.turnNumber + 1;
-    const buzz = state.buzzMs === null ? "" : ` ⚡${seconds(state.buzzMs)}`;
-    const text = `READ OR DEAD 🎯${turnLabel(state.turnNumber)} 突破${buzz} 💥${percent(shot.radius)}\n次は${turnLabel(nextTurn)}、あなたの番。読める？（答えはリプに書かないでね） ${HASHTAG}`;
+    const text = postText(state.turnNumber, state.buzzMs);
     const fullText = `${text}\n${url}`;
 
     const copy = this.guard(async () => {
       await copyText(fullText);
-      this.toast("投稿文をコピーしました");
+      this.toast("コピーしました");
     });
     const shareLink = this.guard(async () => {
       try {
@@ -1258,29 +1277,26 @@ ${options.url}`;
       } catch (err) {
         if (err instanceof DOMException && err.name === "AbortError") return;
         await copyText(fullText);
-        this.toast("共有できなかったので、投稿文をコピーしました");
+        this.toast("共有できなかったので、コピーしました");
       }
     });
-    const xLink = h("a", { class: "btn btn-primary btn-link", text: "X で投稿", attrs: { href: xIntentUrl(text, url), target: "_blank", rel: "noopener" } });
+    const xLink = h("a", { class: "btn btn-primary btn-link", text: "X に投稿", attrs: { href: xIntentUrl(text, url), target: "_blank", rel: "noopener" } });
     const video = (): void =>
       this.showShotShare({ source: run.source, before: state.shots, shot, text, url, back: () => this.showPosted(run) });
 
     this.mount(
-      screen("handoff", [
-        h("div", { class: "sweeps" }, [sweep(shotLabel(state.turnNumber), "left", "shot"), sweep("NEXT READER?", "right", "next")]),
-        h("p", { class: "handoff-title" }, [h("span", { text: "POST" }), h("span", { text: "IT!" })]),
-        h("p", { class: "lead", text: `あなたの一発で、次は${turnLabel(nextTurn)}。このURLを投稿して、続きを誰かに読ませよう。` }),
-        h("img", { class: "card-preview", attrs: { src: `/card/${run.treeId}/${childId}.png`, alt: "リンクカードの画像（撃たれた穴の位置）", width: "1200", height: "630" } }),
-        h("p", { class: "share-text", text: fullText }),
+      screen("posted", [
+        h("p", { class: "kicker", text: `${shotLabel(state.turnNumber)}　弾 ${percent(shot.radius)}` }),
+        h("h2", { class: "posted-title", text: "次の人に読ませよう" }),
+        cardImage(run.treeId, childId),
+        h("p", { class: "fine", text: "投稿にはこのカードが付きます。答えは出ません。" }),
         h("div", { class: "actions" }, [
           xLink,
           h("div", { class: "actions-row" }, [
-            typeof navigator.share === "function" ? button("リンクを共有", shareLink, "ghost") : null,
-            button("投稿文をコピー", copy, "ghost"),
+            typeof navigator.share === "function" ? button("ほかで共有", shareLink, "ghost") : null,
+            button("コピー", copy, "ghost"),
           ]),
-          h("p", { class: "note", text: "画像や動画を添付するとリンクカードが出ません。続きを遊んでほしいときはリンクだけで投稿してください。" }),
-          button("撃った瞬間を動画で共有", video, "ghost"),
-          button("タイトルへ", () => this.showTitle(), "ghost"),
+          h("div", { class: "text-links" }, [textButton("撃った瞬間を動画にする", video), textButton("タイトルへ", () => this.showTitle())]),
         ]),
       ]),
     );
@@ -1293,7 +1309,7 @@ ${options.url}`;
     const answer = state.answer ?? "";
     const meta: ReplayMeta = { answer, shotCount: state.shots.length, survivors: state.turnNumber - 1 };
     const url = new URL(challengePath(run.treeId, state.nodeId), location.origin).href;
-    const text = `READ OR DEAD 💀${turnLabel(state.turnNumber)} で力尽きた（${state.shots.length}発撃たれた画像）\nあなたは読める？（答えはリプに書かないでね） ${HASHTAG}`;
+    const text = `${turnLabel(state.turnNumber)} で力尽きた💀\nあなたは読める？（答えはリプに書かないで） ${HASHTAG}`;
     const stats: readonly (readonly [string, string])[] = [
       ["あなたの番", turnLabel(state.turnNumber)],
       ["撃たれていた数", `${state.shots.length}発`],
