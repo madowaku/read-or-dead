@@ -1089,3 +1089,21 @@ textarea {
   text-underline-offset: 4px;
   cursor: pointer;
 }
+
+/* 共有もコピーもできなかったときに、手で選んでコピーしてもらう文章 */
+.manual-copy {
+  display: block;
+  width: 100%;
+  padding: 10px 12px;
+  border: 2px solid var(--mist);
+  border-radius: 8px;
+  background: var(--cobalt-deep);
+  color: var(--paper);
+  font-size: 14px;
+  line-height: 1.5;
+  resize: none;
+}
+
+.manual-copy[hidden] {
+  display: none;
+}
