@@ -148,8 +148,10 @@ interface OnlineRun {
   readonly attempt: SavedAttempt;
   readonly state: AttemptState;
   readonly source: HTMLCanvasElement;
-  /** 画像を見せ始めた時刻（この端末の時計に直したもの） */
+  /** 画像を見せ始めた時刻（この端末の時計） */
   readonly shownAt: number;
+  /** 問題を受け取ってから画面に出すまでにかかった時間。サーバーはこの分を早押しの時間から差し引く */
+  readonly renderMs: number;
 }
 
 /** すでに別の画面へ移ったので、エラーとして知らせなくてよい */
@@ -166,6 +168,7 @@ const ONLINE_ERROR_MESSAGE: Readonly<Partial<Record<OnlineError["code"], string>
   "node-not-found": "この挑戦ページは見つかりませんでした。",
   expired: "時間切れになりました。",
   "tree-full": "この問題は枝が増えすぎたため、これ以上撃てません。",
+  "rate-limited": "新しい問題を続けて作りすぎました。1分ほど待ってから試してください。",
 };
 
 const FAILURE_HEADLINE: Readonly<Record<"wrong" | "give-up" | "expired", string>> = {
@@ -1158,24 +1161,26 @@ ${options.url}`;
     playReady();
     await wait(prefersReducedMotion() ? REDUCED_INTRO_MS : INTRO_MS);
     const state = await act(treeId, attempt, "start");
-    await this.resumeOnline(treeId, attempt, state);
+    await this.resumeOnline(treeId, attempt, state, Date.now());
   }
 
-  /** 挑戦の状態に合わせて画面を選ぶ（再読み込みで戻ってきたときも） */
-  private async resumeOnline(treeId: string, attempt: SavedAttempt, known?: AttemptState): Promise<void> {
+  /**
+   * 挑戦の状態に合わせて画面を選ぶ（再読み込みで戻ってきたときも）。
+   * startedAt：READY? のあと問題を受け取った時刻。このときは画像を描いて画面に出した瞬間から時計を数える。
+   */
+  private async resumeOnline(treeId: string, attempt: SavedAttempt, known?: AttemptState, startedAt?: number): Promise<void> {
     const state = known ?? (await act(treeId, attempt, "state"));
+    const receivedAt = startedAt ?? Date.now();
     const question = state.questionKey ? findQuestion(state.questionKey) : undefined;
     if (state.status === "claimed" || !question) {
       await this.showChallenge(treeId, state.nodeId);
       return;
     }
-    const run: OnlineRun = {
-      treeId,
-      attempt,
-      state,
-      source: await createSource(question),
-      shownAt: Date.now() - (state.elapsedMs ?? 0),
-    };
+    const source = await createSource(question);
+    const now = Date.now();
+    // 再読み込みで戻ってきたときは、サーバーの時計のまま進める
+    const shownAt = startedAt === undefined ? receivedAt - (state.elapsedMs ?? 0) : now;
+    const run: OnlineRun = { treeId, attempt, state, source, shownAt, renderMs: startedAt === undefined ? 0 : now - receivedAt };
     if (state.status === "started" || state.status === "buzzed") this.showAnswer(this.onlineTurn(run));
     if (state.status === "correct") this.showShoot(this.onlineTurn(run));
     if (state.status === "shot") this.showPosted(run);
@@ -1210,7 +1215,7 @@ ${options.url}`;
       }),
       startClock: () => undefined,
       buzz: async () => {
-        await update("buzz", { clientMs: Date.now() - run.shownAt });
+        await update("buzz", { clientMs: Date.now() - run.shownAt, renderMs: run.renderMs });
       },
       answer: async (input) => (await update("answer", { answer: input })).status === "correct",
       giveUp: async () => {

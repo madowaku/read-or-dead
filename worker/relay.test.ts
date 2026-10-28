@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { MAX_RADIUS, MIN_RADIUS } from "../src/game/power";
 import { KANJI_QUESTIONS } from "../src/game/questions";
 import { ANSWER_LIMIT_MS, ROOT_NODE } from "../src/online/protocol";
-import { CLOCK_TOLERANCE_MS, TreeError, TreeRelay, type SqlRunner, type SqlValue } from "./relay";
+import { CLOCK_TOLERANCE_MS, RENDER_ALLOWANCE_MS, TreeError, TreeRelay, type SqlRunner, type SqlValue } from "./relay";
 
 const TREE = "AbCdEfGhIj";
 const DEVICE_A = "device-a";
@@ -21,6 +21,9 @@ const FAR_LEFT = 0.2;
 const FAR_RIGHT = 0.8;
 const OUTSIDE = 1.5;
 const SECOND_TURN = 2;
+const NO_RENDER = 0;
+const SLOW_RENDER_MS = 2_500;
+const READ_MS = 1_000;
 const question = KANJI_QUESTIONS[0];
 if (!question) throw new Error("no question");
 
@@ -75,7 +78,7 @@ function playAndShoot(relay: TreeRelay, clock: Clock, device: string, nodeId: st
   const claimed = relay.claim(nodeId, device, TOKEN);
   relay.start(claimed.attemptId, TOKEN);
   clock.advance(QUICK_MS);
-  relay.buzz(claimed.attemptId, TOKEN, QUICK_MS);
+  relay.buzz(claimed.attemptId, TOKEN, QUICK_MS, NO_RENDER);
   relay.answer(claimed.attemptId, TOKEN, question.answer);
   const shot = relay.shoot(claimed.attemptId, TOKEN, x, CENTER);
   if (!shot.childNodeId) throw new Error("no child");
@@ -132,10 +135,28 @@ describe("TreeRelay", () => {
     relay.start(claimed.attemptId, TOKEN);
     clock.advance(SLOW_MS);
     // 0 秒と申告しても、サーバーで計った時間から許容幅を引いた分までしか縮まない
-    const buzzed = relay.buzz(claimed.attemptId, TOKEN, 0);
+    const buzzed = relay.buzz(claimed.attemptId, TOKEN, 0, NO_RENDER);
     expect(buzzed.buzzMs).toBe(SLOW_MS - CLOCK_TOLERANCE_MS);
     expect(buzzed.radius).toBeLessThan(MAX_RADIUS);
     expect(buzzed.radius).toBeGreaterThan(MIN_RADIUS);
+  });
+
+  it("問題を描くのに時間がかかった端末では、その分を差し引く", () => {
+    const { relay, clock } = setup();
+    const claimed = relay.claim(ROOT_NODE, DEVICE_A, TOKEN);
+    relay.start(claimed.attemptId, TOKEN);
+    // 描画に 2.5 秒、画面に出てから 1 秒で押した。サーバーでは 3.5 秒＋通信の遅れ
+    clock.advance(SLOW_RENDER_MS + READ_MS + CLOCK_TOLERANCE_MS);
+    expect(relay.buzz(claimed.attemptId, TOKEN, READ_MS, SLOW_RENDER_MS).buzzMs).toBe(READ_MS);
+  });
+
+  it("描画の時間として差し引くのは上限まで", () => {
+    const { relay, clock } = setup();
+    const claimed = relay.claim(ROOT_NODE, DEVICE_A, TOKEN);
+    relay.start(claimed.attemptId, TOKEN);
+    clock.advance(SLOW_MS + RENDER_ALLOWANCE_MS + CLOCK_TOLERANCE_MS);
+    // 描画にとても長くかかったと申告しても、差し引くのは上限まで
+    expect(relay.buzz(claimed.attemptId, TOKEN, 0, SLOW_MS * SLOW_MS).buzzMs).toBe(SLOW_MS);
   });
 
   it("通信の遅れの分だけ短い申告は、そのまま認める", () => {
@@ -143,14 +164,14 @@ describe("TreeRelay", () => {
     const claimed = relay.claim(ROOT_NODE, DEVICE_A, TOKEN);
     relay.start(claimed.attemptId, TOKEN);
     clock.advance(LAG_SERVER_MS);
-    expect(relay.buzz(claimed.attemptId, TOKEN, LAG_CLIENT_MS).buzzMs).toBe(LAG_CLIENT_MS);
+    expect(relay.buzz(claimed.attemptId, TOKEN, LAG_CLIENT_MS, NO_RENDER).buzzMs).toBe(LAG_CLIENT_MS);
   });
 
   it("不正解なら答えを返し、撃てない", () => {
     const { relay } = setup();
     const claimed = relay.claim(ROOT_NODE, DEVICE_A, TOKEN);
     relay.start(claimed.attemptId, TOKEN);
-    relay.buzz(claimed.attemptId, TOKEN, 0);
+    relay.buzz(claimed.attemptId, TOKEN, 0, NO_RENDER);
     const wrong = relay.answer(claimed.attemptId, TOKEN, "ぜったいちがう");
     expect(wrong.status).toBe("wrong");
     expect(wrong.answer).toBeTruthy();
@@ -162,7 +183,7 @@ describe("TreeRelay", () => {
     const { relay, clock } = setup();
     const claimed = relay.claim(ROOT_NODE, DEVICE_A, TOKEN);
     relay.start(claimed.attemptId, TOKEN);
-    relay.buzz(claimed.attemptId, TOKEN, 0);
+    relay.buzz(claimed.attemptId, TOKEN, 0, NO_RENDER);
     clock.advance(ANSWER_LIMIT_MS + 1);
     expect(code(() => relay.answer(claimed.attemptId, TOKEN, question.answer))).toBe("expired");
     expect(relay.state(claimed.attemptId, TOKEN).status).toBe("expired");
@@ -173,7 +194,7 @@ describe("TreeRelay", () => {
     const claimed = relay.claim(ROOT_NODE, DEVICE_A, TOKEN);
     relay.start(claimed.attemptId, TOKEN);
     clock.advance(QUICK_MS);
-    relay.buzz(claimed.attemptId, TOKEN, QUICK_MS);
+    relay.buzz(claimed.attemptId, TOKEN, QUICK_MS, NO_RENDER);
     expect(code(() => relay.answer(claimed.attemptId, "other", question.answer))).toBe("invalid-token");
     relay.answer(claimed.attemptId, TOKEN, question.answer);
     expect(code(() => relay.shoot(claimed.attemptId, TOKEN, OUTSIDE, CENTER))).toBe("out-of-bounds");

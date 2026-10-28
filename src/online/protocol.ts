@@ -29,7 +29,8 @@ export type TreeErrorCode =
   | "bad-state"
   | "expired"
   | "out-of-bounds"
-  | "bad-request";
+  | "bad-request"
+  | "rate-limited";
 
 /** 挑戦ページを開いたときに見せてよい情報。問題の中身は入れない。 */
 export interface NodeView {

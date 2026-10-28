@@ -35,6 +35,7 @@ const HTTP_FORBIDDEN = 403;
 const HTTP_NOT_FOUND = 404;
 const HTTP_CONFLICT = 409;
 const HTTP_GONE = 410;
+const HTTP_TOO_MANY = 429;
 /** 端末 ID は 128bit の 16 進表記 */
 const DEVICE_ID_LENGTH = 32;
 const TOKEN_LENGTH = 32;
@@ -55,6 +56,7 @@ const STATUS_OF: Readonly<Record<TreeErrorCode, number>> = {
   expired: HTTP_GONE,
   "out-of-bounds": HTTP_BAD_REQUEST,
   "bad-request": HTTP_BAD_REQUEST,
+  "rate-limited": HTTP_TOO_MANY,
 };
 
 const ROUTES = {
@@ -71,6 +73,7 @@ type TreeStub = DurableObjectStub<Tree>;
 interface Body {
   readonly token?: unknown;
   readonly clientMs?: unknown;
+  readonly renderMs?: unknown;
   readonly answer?: unknown;
   readonly x?: unknown;
   readonly y?: unknown;
@@ -128,6 +131,10 @@ export default {
     };
 
     if (request.method === "POST" && ROUTES.create.test(url)) {
+      // SNS で広がっても木が際限なく増えないよう、作る回数だけを IP ごとに抑える
+      const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
+      const { success } = await env.TREE_LIMITER.limit({ key: ip });
+      if (!success) return fail("rate-limited");
       const body = await readBody(request);
       const question = pickQuestion(isPool(body.pool) ? body.pool : "all");
       if (!question) return fail("bad-request");
@@ -170,7 +177,9 @@ export default {
       if (action === "give-up") return reply(await stub.giveUp(attempt, tokenHash));
       if (action === "buzz") {
         if (typeof body.clientMs !== "number") return fail("bad-request");
-        return reply(await stub.buzz(attempt, tokenHash, body.clientMs));
+        // 古い画面からの申告には renderMs がない。そのときは描画の時間を差し引かない
+        const renderMs = typeof body.renderMs === "number" ? body.renderMs : 0;
+        return reply(await stub.buzz(attempt, tokenHash, body.clientMs, renderMs));
       }
       if (action === "answer") {
         if (typeof body.answer !== "string" || body.answer.length > MAX_ANSWER_LENGTH) return fail("bad-request");

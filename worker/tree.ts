@@ -54,8 +54,8 @@ export class Tree extends DurableObject {
     return run(() => this.relay.start(attemptId, tokenHash));
   }
 
-  buzz(attemptId: string, tokenHash: string, clientMs: number): Outcome<AttemptState> {
-    return run(() => this.relay.buzz(attemptId, tokenHash, clientMs));
+  buzz(attemptId: string, tokenHash: string, clientMs: number, renderMs: number): Outcome<AttemptState> {
+    return run(() => this.relay.buzz(attemptId, tokenHash, clientMs, renderMs));
   }
 
   answer(attemptId: string, tokenHash: string, input: string): Outcome<AttemptState> {

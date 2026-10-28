@@ -35,6 +35,11 @@ export interface RelayDeps {
 
 /** 通信の遅れは許し、時間のごまかしは防ぐ：サーバーで計った時間よりこれ以上短い申告は認めない */
 export const CLOCK_TOLERANCE_MS = 3_000;
+/**
+ * 問題を受け取ってから画面に出すまで（フォントの読み込み・画像の描画）にかかった時間。
+ * 遅い端末で、見る前に時間が減らないよう差し引く。ただしこの長さまで。
+ */
+export const RENDER_ALLOWANCE_MS = 5_000;
 /** 1 本の木に作れるノードの数 */
 export const MAX_NODES = 2_000;
 /** 子ノードの ID が重なったときに作り直す回数 */
@@ -250,14 +255,19 @@ export class TreeRelay {
     return this.state(attemptId, tokenHash);
   }
 
-  /** わかった！：経過時間で弾の大きさが決まる */
-  buzz(attemptId: string, tokenHash: string, clientMs: number): AttemptState {
+  /**
+   * わかった！：経過時間で弾の大きさが決まる。
+   * clientMs は画面に問題が出てからの時間、renderMs は問題を受け取ってから画面に出すまでの時間（どちらも端末で計る）。
+   * サーバーの時計は問題を渡したときに動き出しているので、描画にかかった分は差し引く。
+   */
+  buzz(attemptId: string, tokenHash: string, clientMs: number, renderMs: number): AttemptState {
     const attempt = this.attempt(attemptId, tokenHash);
     this.require(attempt, ["started"]);
-    if (!Number.isFinite(clientMs) || attempt.startedAt === null) throw new TreeError("bad-request");
+    if (!Number.isFinite(clientMs) || !Number.isFinite(renderMs) || attempt.startedAt === null) throw new TreeError("bad-request");
     const now = this.deps.now();
     const serverMs = now - attempt.startedAt;
-    const buzzMs = Math.round(Math.min(serverMs, Math.max(clientMs, serverMs - CLOCK_TOLERANCE_MS, 0)));
+    const render = Math.min(RENDER_ALLOWANCE_MS, Math.max(0, renderMs));
+    const buzzMs = Math.round(Math.min(serverMs, Math.max(clientMs, serverMs - render - CLOCK_TOLERANCE_MS, 0)));
     this.rows("UPDATE attempt SET status = 'buzzed', buzzed_at = ?, buzz_ms = ? WHERE id = ?", now, buzzMs, attemptId);
     return this.state(attemptId, tokenHash);
   }
