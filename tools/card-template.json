@@ -1,0 +1,18 @@
+{
+  "colors": {
+    "cobalt": "#1d3bd6",
+    "paper": "#ffffff",
+    "pink": "#ff2e88",
+    "mist": "#b9c6ff"
+  },
+  "question": { "size": 300 },
+  "digitFont": 112,
+  "digitNudge": 6,
+  "texts": [
+    { "text": "READ OR", "x": 630, "y": 140, "size": 68, "color": "paper", "display": true },
+    { "text": "DEAD", "x": 630, "y": 220, "size": 68, "color": "pink", "display": true },
+    { "text": "TURN", "x": 630, "y": 362, "size": 54, "color": "paper", "display": true },
+    { "text": "読める？", "x": 630, "y": 500, "size": 92, "color": "pink", "display": true },
+    { "text": "答えはリンクの先で。READY? まで見えません", "x": 632, "y": 566, "size": 24, "color": "mist", "display": false }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "width": 1200,
+  "height": 630,
+  "paper": { "x": 60, "y": 60, "size": 510 },
+  "digit": { "width": 84, "height": 118 },
+  "digitSlot": { "x": 846, "y": 262, "gap": 6 },
+  "digitCount": 3,
+  "hole": { "rim": 5, "checker": 14 },
+  "rampSteps": 16,
+  "paperRampIndex": 3,
+  "checkerFromEnd": { "light": 2, "dark": 1 },
+  "hexRadix": 16,
+  "colors": {
+    "cobalt": "#1d3bd6",
+    "paper": "#ffffff",
+    "ink": "#000000",
+    "pink": "#ff2e88",
+    "mist": "#b9c6ff",
+    "checkerLight": "#8e97c2",
+    "checkerDark": "#6b74a3"
+  }
+}
