@@ -997,3 +997,26 @@ textarea {
     animation-duration: 1ms !important;
   }
 }
+
+/* =========================================================
+   v0.3 URL リレー
+   ========================================================= */
+
+.card-preview {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 8px;
+  border: 2px solid var(--mist);
+}
+
+.share-text {
+  margin: 0;
+  padding: 12px 14px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  line-height: 1.5;
+  background: var(--cobalt-deep);
+  border-radius: 8px;
+}
