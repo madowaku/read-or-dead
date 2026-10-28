@@ -17,10 +17,17 @@ export interface Stage {
   readonly canvas: HTMLCanvasElement;
 }
 
-export function createStage(source: HTMLCanvasElement, shots: readonly Shot[]): Stage {
+/**
+ * 穴の向こうに見せるもの。
+ * paper：紙と同じ白。遊んでいる間はこちらで、最初からそうだったように見せて誤読を誘う。
+ * checker：市松模様。答え合わせ（終了画面・逆再生）で「ここを撃たれていた」と明かす。
+ */
+export type HoleBacking = "paper" | "checker";
+
+export function createStage(source: HTMLCanvasElement, shots: readonly Shot[], backing: HoleBacking = "checker"): Stage {
   const canvas = h("canvas", { class: "stage-canvas", attrs: { width: String(SOURCE_SIZE), height: String(SOURCE_SIZE), "aria-label": "問題の画像" } });
   drawDamaged(canvas, source, shots);
-  const element = h("div", { class: "stage" }, [canvas]);
+  const element = h("div", { class: `stage stage-${backing}` }, [canvas]);
   return { element, canvas };
 }
 
@@ -52,4 +59,18 @@ export function flashAt(stage: HTMLElement, point: Point, radius: number): void 
   });
   flash.addEventListener("animationend", () => flash.remove());
   stage.append(flash);
+}
+
+/** 着弾直後だけ、新しい穴を市松模様で見せてから白になじませる */
+export function revealHole(stage: HTMLElement, point: Point, radius: number, durationMs: number): void {
+  const size = `${radius * DIAMETER_PER_RADIUS * PERCENT}%`;
+  const hole = h("div", {
+    class: "hole-reveal",
+    attrs: {
+      style: `left:${point.x * PERCENT}%;top:${point.y * PERCENT}%;width:${size};height:${size};animation-duration:${durationMs}ms`,
+      "aria-hidden": "true",
+    },
+  });
+  hole.addEventListener("animationend", () => hole.remove());
+  stage.append(hole);
 }

@@ -25,7 +25,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
-      - run: npm run build
+      # GitHub Pages 版はサーバーなし（URL リレーは出さない）。Workers 版は npm run deploy で公開する
+      - run: npm run build:pages
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist

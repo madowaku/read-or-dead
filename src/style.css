@@ -894,3 +894,129 @@ textarea {
   font-size: 14px;
   font-weight: 700;
 }
+
+/* =========================================================
+   v0.2.2 白い穴と横→縦の 2 回タップ照準
+   ========================================================= */
+
+/* 遊んでいる間は穴の向こうを紙と同じ白にして、最初からそうだったように見せる */
+.stage-paper {
+  background: var(--paper);
+}
+
+/* 着弾直後だけ穴を市松模様で見せ、白になじませる */
+.hole-reveal {
+  position: absolute;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  background-color: var(--checker-light);
+  background-image: conic-gradient(var(--checker-dark) 25%, transparent 0 50%, var(--checker-dark) 0 75%, transparent 0);
+  background-size: 25% 25%;
+  pointer-events: none;
+  animation-name: hole-fade;
+  animation-timing-function: ease-in;
+  animation-fill-mode: forwards;
+}
+
+@keyframes hole-fade {
+  0%,
+  45% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+.sweep-line {
+  position: absolute;
+  background: var(--pink);
+  box-shadow: 0 0 0 1px var(--paper);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.sweep-line-x {
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  transform: translateX(-50%);
+}
+
+.sweep-line-x.is-locked {
+  width: 2px;
+  opacity: 0.55;
+}
+
+.sweep-line-y {
+  left: 0;
+  right: 0;
+  height: 4px;
+  transform: translateY(-50%);
+  display: none;
+}
+
+.sweep-line-y.is-active {
+  display: block;
+}
+
+.aim-step {
+  margin: 0;
+  font-weight: 700;
+  font-size: 17px;
+  min-height: 2.6em;
+}
+
+.screen-shoot {
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: pointer;
+}
+
+.tap-pad {
+  margin-top: auto;
+  min-height: 112px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  background: var(--pink);
+  color: var(--ink);
+  font-family: var(--display);
+  font-size: 48px;
+  box-shadow: 0 6px 0 var(--ink);
+}
+
+.tap-pad:active {
+  transform: translateY(6px);
+  box-shadow: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hole-reveal {
+    animation-duration: 1ms !important;
+  }
+}
+
+/* =========================================================
+   v0.3 URL リレー
+   ========================================================= */
+
+.card-preview {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 8px;
+  border: 2px solid var(--mist);
+}
+
+.share-text {
+  margin: 0;
+  padding: 12px 14px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  line-height: 1.5;
+  background: var(--cobalt-deep);
+  border-radius: 8px;
+}

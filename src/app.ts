@@ -1,5 +1,7 @@
-// 画面遷移。ローカルモード（同じ端末を回して遊ぶ）。
-// READY? → 早押し（わかった！）→ 回答 → 揺れる照準で BANG! → PASS IT ON → 次の人。
+// 画面遷移。
+// ローカルモード（同じ端末を回して遊ぶ）：READY? → 早押し（わかった！）→ 回答 → 照準で BANG! → PASS IT ON → 次の人。
+// オンライン（URL リレー）：挑戦ページ → READY? → 早押し → 回答 → BANG! → 自分の一発の URL を投稿。
+// 回答と射撃の画面は Turn を通して両方で使う。
 
 import { BURST_MS, drawBurst } from "./fx/burst";
 import { isMuted, playBuzz, playDead, playPass, playReady, playShot, setMuted } from "./fx/feedback";
@@ -12,8 +14,11 @@ import {
   WORD_QUESTIONS,
   customQuestion,
   displayAnswer,
+  findQuestion,
   pickFresh,
 } from "./game/questions";
+import { OnlineError, act, claim, createTree, fetchNode, parseChallengePath, savedAttempt, type SavedAttempt } from "./online/client";
+import { ANSWER_LIMIT_MS, challengePath, isFailure, type AttemptState, type OnlinePool } from "./online/protocol";
 import { LocalRelay, RelayError, type RelayResult } from "./game/relay";
 import { createSource, drawDamaged } from "./game/render";
 import type { Chain, Question, Shot } from "./game/types";
@@ -35,9 +40,9 @@ import { play, type Drawer, type PlaybackHandle } from "./replay/player";
 import { canvasToBlob, copyText, shareOrDownload, siteUrl, xIntentUrl } from "./replay/share";
 import { frameAt, replayDuration, replaySoundCues } from "./replay/timeline";
 import { clearGame, forgetPlayed, loadGame, loadPlayed, loadVideoSound, markPlayed, saveGame, saveVideoSound } from "./storage";
-import { startAim, type AimController } from "./ui/aim";
+import { startSweepAim, type AimController, type AimStep } from "./ui/aim";
 import { button, h, once } from "./ui/dom";
-import { createReticle, createStage, type Point } from "./ui/stage";
+import { createReticle, createStage, revealHole, type Point } from "./ui/stage";
 
 const TOAST_MS = 2800;
 const PREVIEW_DEBOUNCE_MS = 250;
@@ -92,6 +97,12 @@ const POOLS: Readonly<Record<Pool, { readonly label: string; readonly questions:
   all: { label: "ぜんぶ", questions: ALL_QUESTIONS },
 };
 
+const AIM_STEP_LABEL: Readonly<Record<AimStep, string>> = {
+  x: "① 動く縦線を、狙う横位置でタップ",
+  y: "② 動く横線を、狙う縦位置でタップで発射！",
+  done: "BANG!",
+};
+
 const RANK_TITLE: Readonly<Record<PowerRank, string>> = {
   power: "POWER SHOT!",
   normal: "SHOT!",
@@ -104,6 +115,68 @@ interface Game {
   readonly source: HTMLCanvasElement;
 }
 
+/** 回答・射撃の画面に見せる、いまのターンの様子 */
+interface TurnView {
+  readonly turnNumber: number;
+  readonly shots: readonly Shot[];
+  /** 画像を見せ始めた時刻（この端末の時計） */
+  readonly shownAt: number | null;
+  readonly buzzedAt: number | null;
+  readonly power: number | null;
+}
+
+/** 1 人分の挑戦。ローカル（LocalRelay）とオンライン（API）で同じ画面を使うための窓口 */
+interface Turn {
+  readonly source: HTMLCanvasElement;
+  readonly view: () => TurnView;
+  /** 画像を見せた。オンラインではサーバーの時計が先に動いているので何もしない */
+  readonly startClock: () => void;
+  readonly buzz: () => Promise<void>;
+  /** 正解なら true */
+  readonly answer: (input: string) => Promise<boolean>;
+  readonly giveUp: () => Promise<void>;
+  readonly fire: (point: Point) => Promise<Shot>;
+  readonly afterShot: () => void;
+  readonly afterFail: () => void;
+  readonly giveUpPrompt: string;
+  readonly note: string;
+}
+
+/** オンラインの 1 回の挑戦 */
+interface OnlineRun {
+  readonly treeId: string;
+  readonly attempt: SavedAttempt;
+  readonly state: AttemptState;
+  readonly source: HTMLCanvasElement;
+  /** 画像を見せ始めた時刻（この端末の時計） */
+  readonly shownAt: number;
+  /** 問題を受け取ってから画面に出すまでにかかった時間。サーバーはこの分を早押しの時間から差し引く */
+  readonly renderMs: number;
+}
+
+/** すでに別の画面へ移ったので、エラーとして知らせなくてよい */
+class Redirected extends Error {}
+
+const ONLINE_POOLS: readonly OnlinePool[] = ["kanji", "word", "silhouette", "all"];
+/** GitHub Pages 版にはサーバーがないので、URL リレーは出さない */
+const ONLINE_AVAILABLE = import.meta.env.MODE !== "pages";
+
+const ONLINE_ERROR_MESSAGE: Readonly<Partial<Record<OnlineError["code"], string>>> = {
+  network: "通信できませんでした。電波のよい所でもう一度試してください。",
+  "already-played": "この問題にはもう挑戦しました。挑戦できるのは1回だけです。",
+  "tree-not-found": "この挑戦ページは見つかりませんでした。",
+  "node-not-found": "この挑戦ページは見つかりませんでした。",
+  expired: "時間切れになりました。",
+  "tree-full": "この問題は枝が増えすぎたため、これ以上撃てません。",
+  "rate-limited": "新しい問題を続けて作りすぎました。1分ほど待ってから試してください。",
+};
+
+const FAILURE_HEADLINE: Readonly<Record<"wrong" | "give-up" | "expired", string>> = {
+  wrong: "読めなかった。",
+  "give-up": "ギブアップ。",
+  expired: "時間切れ。",
+};
+
 function screen(name: string, children: readonly (Node | null | false)[]): HTMLElement {
   return h("main", { class: `screen screen-${name}` }, children);
 }
@@ -115,6 +188,7 @@ function resumeLabel(chain: Chain): string {
 
 function errorMessage(err: unknown): string {
   if (err instanceof RelayError) return "この操作はもうできません。画面を進めてください。";
+  if (err instanceof OnlineError) return ONLINE_ERROR_MESSAGE[err.code] ?? "この操作はもうできません。ページを読み込み直してください。";
   if (err instanceof RecordingError) return err.message;
   if (err instanceof Error) return err.message;
   return "うまくいきませんでした。もう一度試してください。";
@@ -165,6 +239,14 @@ function createMeter(): { readonly element: HTMLElement; readonly update: (radiu
   };
 }
 
+/** READY? の演出。終わったら呼び出し側で取り除く */
+function readyIntro(turnNumber: number): HTMLElement {
+  return h("div", { class: "intro", attrs: { "aria-live": "assertive" } }, [
+    h("p", { class: "intro-ready", text: "READY?" }),
+    h("p", { class: "intro-turn", text: turnLabel(turnNumber) }),
+  ]);
+}
+
 /** 画面を駆け抜ける文字 */
 function sweep(text: string, direction: "left" | "right", variant: string): HTMLElement {
   return h("p", { class: `sweep sweep-${direction} sweep-${variant}`, attrs: { "aria-hidden": "true" } }, [h("span", { text })]);
@@ -180,7 +262,22 @@ export class App {
   constructor(private readonly root: HTMLElement) {}
 
   start(): void {
+    window.addEventListener("popstate", () => this.route());
+    this.route();
+  }
+
+  /** URL に合わせて最初の画面を選ぶ。"/r/<木>/<ノード>" なら挑戦ページ */
+  private route(): void {
+    const challenge = ONLINE_AVAILABLE ? parseChallengePath(location.pathname) : null;
+    if (challenge) {
+      this.guard(() => this.showChallenge(challenge.treeId, challenge.nodeId))();
+      return;
+    }
     this.showTitle();
+  }
+
+  private goTo(path: string): void {
+    if (location.pathname !== path) history.pushState(null, "", path);
   }
 
   // ---- 共通 ----
@@ -208,6 +305,7 @@ export class App {
         try {
           await action();
         } catch (err) {
+          if (err instanceof Redirected) return;
           console.error(err);
           this.toast(errorMessage(err));
         }
@@ -234,6 +332,7 @@ export class App {
   // ---- 1. タイトル ----
 
   private showTitle(): void {
+    if (ONLINE_AVAILABLE) this.goTo("/");
     const saved = loadGame();
     const savedLabel = saved ? resumeLabel(saved.relay.chain) : null;
     const logo = h("h1", { class: "logo", attrs: { "aria-label": "READ OR DEAD" } }, [
@@ -252,7 +351,8 @@ export class App {
         logo,
         h("p", { class: "tagline", text: "読めたら撃て。撃ったら渡せ。" }),
         h("div", { class: "actions" }, [
-          button("START", () => this.showSetup()),
+          ONLINE_AVAILABLE ? button("URLでリレー", () => this.showOnlineSetup()) : null,
+          button(ONLINE_AVAILABLE ? "1台を回して遊ぶ" : "START", () => this.showSetup(), ONLINE_AVAILABLE ? "ghost" : "primary"),
           savedLabel ? button(savedLabel, this.guard(() => this.resume()), "ghost") : null,
           button("遊び方", () => this.showHowTo(), "ghost"),
           soundButton,
@@ -263,10 +363,12 @@ export class App {
 
   private showHowTo(): void {
     const steps = [
-      "1台のスマホを順番に回して遊びます。",
+      "「URLでリレー」は、撃った後の画像に挑戦するURLをSNSに投稿して、知らない人とつなぐ遊び方です。同じURLから何人でも挑戦でき、正解して撃った人の数だけ枝分かれします。挑戦できるのは1つの問題につき1回だけ。",
+      "「1台を回して遊ぶ」は、1台のスマホを順番に回して遊びます。",
       "画像が出たら、読めた瞬間に「わかった！」。早く押すほど弾が大きくなります（0秒で12%、15秒で6%）。",
       "それから答えを入力。チャンスは1回。入力の速さは弾の大きさに関係ありません。",
-      "正解したら、画像をなぞって狙い、BANG!。照準は少し揺れます。動かした直後は特に揺れるので、落ち着いてから撃つのがコツ。",
+      "正解したら撃つ番。左右に動く縦線をタップで止めて横位置を決め、次に上下に動く横線をタップで止めると発射。大きい弾ほど線が速く動きます。",
+      "撃たれた所は白くなって、最初からそうだったように見えます。「犬」の点を消して「大」と読ませる、みたいな意地悪な一発を狙おう。",
       "撃ったら次の人へ。その一発は短い動画にしてすぐ共有できます。",
       "誰かが読めなかったら終了。消えた絵が元に戻るリプレイで答え合わせ。",
     ];
@@ -378,8 +480,8 @@ export class App {
     this.token = saved.token;
     const view = this.game.relay.publicView();
     if (view.status !== "active") return this.showEnd();
-    if (this.token && view.turnStatus === "claimed") return this.showAnswer();
-    if (this.token && view.turnStatus === "correct") return this.showShoot();
+    if (this.token && view.turnStatus === "claimed") return this.showAnswer(this.localTurn());
+    if (this.token && view.turnStatus === "correct") return this.showShoot(this.localTurn());
     return this.showReceive();
   }
 
@@ -392,7 +494,7 @@ export class App {
       this.guard(() => {
         this.token = relay.claimTurn();
         this.persist();
-        this.showAnswer();
+        this.showAnswer(this.localTurn());
       }),
     );
     const ready = view.turnStatus === "waiting";
@@ -420,22 +522,58 @@ export class App {
 
   // ---- 4. 回答（READY? → わかった！ → 入力） ----
 
-  private showAnswer(): void {
+  /** ローカルモードの今のターン */
+  private localTurn(): Turn {
     const { relay, source } = this.requireGame();
     const token = this.requireToken();
-    const view = relay.publicView();
-    const meter = createMeter();
-    const stage = createStage(source, view.shots);
-    const buzzed = view.buzzedAt !== null && view.shownAt !== null;
-
-    const giveUp = (): void => {
-      if (!window.confirm("ギブアップするとゲームが終わります。いいですか？")) return;
-      this.guard(() => {
+    return {
+      source,
+      view: () => relay.publicView(),
+      startClock: () => {
+        relay.startClock(token, Date.now());
+        this.persist();
+      },
+      buzz: async () => {
+        relay.buzz(token, Date.now());
+        this.persist();
+      },
+      answer: async (input) => {
+        const { correct } = relay.submitAnswer(token, input);
+        if (!correct) this.token = null;
+        this.persist();
+        return correct;
+      },
+      giveUp: async () => {
         relay.giveUp(token);
         this.token = null;
         this.persist();
+      },
+      fire: async (point) => {
+        const shot = relay.fireShot(token, point.x, point.y);
+        this.token = null;
+        this.persist();
+        return shot;
+      },
+      afterShot: () => this.showHandoff(),
+      afterFail: () => this.showEnd(),
+      giveUpPrompt: "ギブアップするとゲームが終わります。いいですか？",
+      note: "読めた瞬間に押す。入力の時間は数えません。",
+    };
+  }
+
+  private showAnswer(turn: Turn): void {
+    const { source } = turn;
+    const view = turn.view();
+    const meter = createMeter();
+    const stage = createStage(source, view.shots, "paper");
+    const buzzed = view.buzzedAt !== null && view.shownAt !== null;
+
+    const giveUp = (): void => {
+      if (!window.confirm(turn.giveUpPrompt)) return;
+      this.guard(async () => {
+        await turn.giveUp();
         playDead();
-        this.showEnd();
+        turn.afterFail();
       })();
     };
     const giveUpButton = button("ギブアップ", giveUp, "danger");
@@ -451,7 +589,7 @@ export class App {
 
     if (buzzed && view.shownAt !== null && view.buzzedAt !== null && view.power !== null) {
       meter.update(view.power, view.buzzedAt - view.shownAt);
-      this.mount(screen("answer", [header, stage.element, this.answerForm(token, view.power, view.buzzedAt - view.shownAt), giveUpButton]));
+      this.mount(screen("answer", [header, stage.element, this.answerForm(turn, view.power, view.buzzedAt - view.shownAt), giveUpButton]));
       return;
     }
 
@@ -460,7 +598,7 @@ export class App {
     buzzButton.disabled = view.shownAt === null;
     const ticker = { frameId: 0 };
     const tick = (): void => {
-      const shownAt = relay.publicView().shownAt;
+      const shownAt = turn.view().shownAt;
       if (shownAt !== null) {
         const elapsed = Math.max(0, Date.now() - shownAt);
         meter.update(radiusFor(elapsed), elapsed);
@@ -470,30 +608,25 @@ export class App {
     meter.update(MAX_RADIUS, 0);
 
     const buzz = once(
-      this.guard(() => {
-        relay.buzz(token, Date.now());
-        this.persist();
+      this.guard(async () => {
         playBuzz();
-        this.showAnswer();
+        await turn.buzz();
+        this.showAnswer(turn);
       }),
     );
 
     const startClock = (): void => {
-      relay.startClock(token, Date.now());
-      this.persist();
+      turn.startClock();
       stage.element.classList.remove("is-covered");
       buzzButton.disabled = false;
       ticker.frameId = requestAnimationFrame(tick);
     };
 
-    const view$ = screen("answer", [header, stage.element, buzzButton, h("p", { class: "note", text: "読めた瞬間に押す。入力の時間は数えません。" }), giveUpButton]);
+    const view$ = screen("answer", [header, stage.element, buzzButton, h("p", { class: "note", text: turn.note }), giveUpButton]);
     if (view.shownAt === null) {
       // まだ見せていない：READY? の演出のあとで画像を出し、時計を動かす
       stage.element.classList.add("is-covered");
-      const intro = h("div", { class: "intro", attrs: { "aria-live": "assertive" } }, [
-        h("p", { class: "intro-ready", text: "READY?" }),
-        h("p", { class: "intro-turn", text: turnLabel(view.turnNumber) }),
-      ]);
+      const intro = readyIntro(view.turnNumber);
       view$.append(intro);
       this.mount(view$);
       this.cleanup = (): void => cancelAnimationFrame(ticker.frameId);
@@ -508,31 +641,26 @@ export class App {
       void reveal();
       return;
     }
-    // 再読み込みなどで戻ってきた：時計は最初に見せた時刻から進んだまま
+    // 再読み込みやオンラインの READY? のあと：時計は最初に見せた時刻から進んだまま
     this.mount(view$);
     this.cleanup = (): void => cancelAnimationFrame(ticker.frameId);
     startClock();
   }
 
-  private answerForm(token: string, power: number, elapsedMs: number): HTMLElement {
-    const { relay } = this.requireGame();
+  private answerForm(turn: Turn, power: number, elapsedMs: number): HTMLElement {
     const input = h("input", {
       class: "answer-input",
       attrs: { type: "text", autocomplete: "off", autocapitalize: "off", spellcheck: "false", enterkeyhint: "done", placeholder: "答えを入力", "aria-label": "回答", "data-autofocus": "" },
     });
     const submit = once(
-      this.guard(() => {
-        const outcome = relay.submitAnswer(token, input.value);
-        this.persist();
-        if (outcome.correct) {
+      this.guard(async () => {
+        if (await turn.answer(input.value)) {
           playPass();
-          this.showShoot();
+          this.showShoot(turn);
           return;
         }
-        this.token = null;
-        this.persist();
         playDead();
-        this.showEnd();
+        turn.afterFail();
       }),
     );
     const form = h("form", { class: "answer-form" }, [
@@ -556,52 +684,65 @@ export class App {
 
   // ---- 5. 射撃 ----
 
-  private showShoot(): void {
-    const { relay, source } = this.requireGame();
-    const token = this.requireToken();
-    const view = relay.publicView();
+  private showShoot(turn: Turn): void {
+    const { source } = turn;
+    const view = turn.view();
     const power = view.power ?? MIN_RADIUS;
     const rank = rankOf(power);
 
-    const stage = createStage(source, view.shots);
+    const stage = createStage(source, view.shots, "paper");
     const reticle = createReticle(power);
     stage.element.append(reticle);
     stage.element.classList.add("is-aiming");
     const burstCanvas = h("canvas", { class: "burst-canvas", attrs: { "aria-hidden": "true" } });
     const wrap = h("div", { class: "stage-wrap" }, [stage.element, burstCanvas]);
-    const bangButton = button("BANG!", () => fire(), "primary");
-    bangButton.classList.add("btn-bang");
-    const aim: AimController = startAim(stage.element, stage.canvas, reticle, () => undefined);
+    const stepLabel = h("p", { class: "aim-step", attrs: { "aria-live": "polite" } });
+    const tapPad = h("div", { class: "tap-pad", text: "TAP!", attrs: { "aria-hidden": "true" } });
 
+    const target: { point: Point | null } = { point: null };
     const fire = once(
       this.guard(async () => {
-        const point: Point = aim.current();
-        bangButton.disabled = true;
-        const shot = relay.fireShot(token, point.x, point.y);
-        this.token = null;
-        this.persist();
+        const point = target.point;
+        if (!point) return;
         aim.stop();
         reticle.remove();
         stage.element.classList.remove("is-aiming");
         playShot(powerLevel(power));
+        // オンラインでは撃った位置をサーバーに送ってから着弾させる（弾の大きさはサーバーが決める）
+        const shot = await turn.fire(point);
         this.animateImpact(view$, stage.canvas, burstCanvas, source, view.shots, shot);
         await wait(AFTER_SHOT_MS);
-        if (view$.isConnected) this.showHandoff();
+        if (view$.isConnected) turn.afterShot();
       }),
     );
 
     const view$ = screen("shoot", [
       h("p", { class: `power-banner power-${rank}` }, [h("span", { class: "power-title", text: RANK_TITLE[rank] }), h("span", { class: "power-detail", text: `弾 ${percent(power)}` })]),
-      h("p", { class: "lead", text: "画像をなぞって狙う。照準は少し揺れます。" }),
+      stepLabel,
       wrap,
-      h("div", { class: "actions" }, [bangButton]),
+      tapPad,
     ]);
+    const aim: AimController = startSweepAim({
+      tapArea: view$,
+      stage: stage.element,
+      reticle,
+      radius: power,
+      onStep: (step) => {
+        stepLabel.textContent = AIM_STEP_LABEL[step];
+        tapPad.textContent = step === "done" ? "BANG!" : "TAP!";
+        if (step === "y") playBuzz();
+      },
+      onFire: (point) => {
+        target.point = point;
+        fire();
+      },
+    });
     this.mount(view$);
     // mount() は前の画面の後片付けを呼ぶので、この画面の後片付けは mount の後に登録する
     this.cleanup = (): void => aim.stop();
   }
 
-  /** 着弾：穴が広がる・衝撃波と破片・画面の揺れ・BANG! の文字 */
+  /** 着弾：穴が広がる・一瞬だけ穴を見せる・衝撃波と破片・画面の揺れ・BANG! の文字 */
   private animateImpact(view: HTMLElement, canvas: HTMLCanvasElement, burstCanvas: HTMLCanvasElement, source: HTMLCanvasElement, before: readonly Shot[], shot: Shot): void {
     const burst = shotBurst(shot);
     const stageRect = canvas.getBoundingClientRect();
@@ -616,11 +757,14 @@ export class App {
     view.style.setProperty("--shake", String(powerLevel(shot.radius)));
     if (!prefersReducedMotion()) view.classList.add("is-shaking");
     view.append(h("p", { class: `bang-stamp bang-${rankOf(shot.radius)}`, text: "BANG!", attrs: { "aria-hidden": "true" } }));
+    // 当たった手応えのため、一瞬だけ穴を市松模様で見せてから白になじませる
+    if (canvas.parentElement) revealHole(canvas.parentElement, shot, shot.radius, fx.hole.revealMs);
 
     const startedAt = performance.now();
     const frame = (now: number): void => {
       const elapsed = now - startedAt;
-      const grow = Math.min(1, elapsed / fx.hole.growMs);
+      // requestAnimationFrame の時刻は描き始めた時刻より少し前のことがあるので、0 未満にしない
+      const grow = Math.min(1, Math.max(0, elapsed / fx.hole.growMs));
       drawDamaged(canvas, source, [...before, { ...shot, radius: shot.radius * grow }]);
       const ctx = burstCanvas.getContext("2d");
       ctx?.clearRect(0, 0, burstCanvas.width, burstCanvas.height);
@@ -651,17 +795,29 @@ export class App {
         h("p", { class: "lead", text: `答えは言わずに、${view.turnNumber}人目の人へ端末を渡してください。` }),
         h("div", { class: "actions" }, [
           button("渡した", () => this.showReceive()),
-          shot ? button("この一発をシェア", () => this.showShotShare(shot), "ghost") : null,
+          shot ? button("この一発をシェア", () => this.showLocalShotShare(shot), "ghost") : null,
         ]),
       ]),
     );
   }
 
-  /** 1 発分の短い動画を作って共有する。答えは出さない。 */
-  private showShotShare(shot: Shot): void {
+  private showLocalShotShare(shot: Shot): void {
     const { source, relay } = this.requireGame();
-    const view = relay.publicView();
-    const before = view.shots.filter((other) => other.turnNumber < shot.turnNumber);
+    const before = relay.publicView().shots.filter((other) => other.turnNumber < shot.turnNumber);
+    const text = `${shotLabel(shot.turnNumber)} 💥 ${before.length + 1}発撃たれたこの画像、読める？\n次はあなたの番。 ${HASHTAG}`;
+    this.showShotShare({ source, before, shot, text, url: siteUrl(), back: () => this.showHandoff() });
+  }
+
+  /** 1 発分の短い動画を作って共有する。答えは出さない。 */
+  private showShotShare(options: {
+    readonly source: HTMLCanvasElement;
+    readonly before: readonly Shot[];
+    readonly shot: Shot;
+    readonly text: string;
+    readonly url: string;
+    readonly back: () => void;
+  }): void {
+    const { source, before, shot, text } = options;
     const shotCount = before.length + 1;
     const meta = { turnNumber: shot.turnNumber, shotCount };
     const canvas = createFrameCanvas();
@@ -669,7 +825,6 @@ export class App {
     canvas.setAttribute("aria-label", `${shotLabel(shot.turnNumber)} の動画`);
     const composer = createShotClipComposer(source, before, shot, meta);
     const draw: Drawer = (elapsed) => composer(canvas, elapsed);
-    const text = `${shotLabel(shot.turnNumber)} 💥 ${shotCount}発撃たれたこの画像、読める？\n次はあなたの番。 ${HASHTAG}`;
 
     const loop = async (): Promise<void> => {
       // 共有ボタンを押して録画が始まるまで、繰り返し再生して見せる
@@ -688,7 +843,8 @@ export class App {
       poster: () => composeShotCard(source, before, shot, meta),
       filename: `read-or-dead-shot-${shot.turnNumber}`,
       text,
-      back: () => this.showHandoff(),
+      url: options.url,
+      back: options.back,
       backLabel: "戻る",
       resume: () => void loop(),
     });
@@ -709,6 +865,8 @@ export class App {
     readonly poster: () => HTMLCanvasElement;
     readonly filename: string;
     readonly text: string;
+    /** 投稿文に添える URL（オンラインでは挑戦ページ） */
+    readonly url: string;
     readonly back: () => void;
     readonly backLabel: string;
     /** 書き出しの間止めていたプレビューを再開する */
@@ -717,7 +875,7 @@ export class App {
     const busy = { recording: false, sound: loadVideoSound() };
     const videoAvailable = canMakeVideo();
     const fullText = `${options.text}
-${siteUrl()}`;
+${options.url}`;
     const videoButton = button("動画で共有", () => saveVideo());
     const soundButtons = ([true, false] as const).map((withSound) => {
       const soundButton = button(withSound ? "音あり" : "音なし", () => {
@@ -776,7 +934,7 @@ ${siteUrl()}`;
     const xLink = h("a", {
       class: "btn btn-ghost btn-link",
       text: "X で投稿",
-      attrs: { href: xIntentUrl(options.text, siteUrl()), target: "_blank", rel: "noopener" },
+      attrs: { href: xIntentUrl(options.text, options.url), target: "_blank", rel: "noopener" },
     });
     const element = h("div", { class: "actions" }, [
       videoAvailable
@@ -802,6 +960,15 @@ ${siteUrl()}`;
   private showEnd(): void {
     const { source } = this.requireGame();
     const { result, meta } = this.resultMeta();
+    const replay = (): void =>
+      this.showReplay({
+        source,
+        shots: result.shots,
+        meta,
+        text: `READ OR DEAD 💀 ${result.survivors}人が読んで${result.shots.length}発で力尽きた。何発目で分かった？ ${HASHTAG}`,
+        url: siteUrl(),
+        back: () => this.showEnd(),
+      });
     const headline = result.endedBy === "give-up" ? "ギブアップ。" : "読めなかった。";
     const biggest = result.shots.reduce<Shot | null>((best, shot) => (!best || shot.radius > best.radius ? shot : best), null);
     const stats: readonly (readonly [string, string])[] = [
@@ -822,7 +989,7 @@ ${siteUrl()}`;
           stats.flatMap(([label, value]) => [h("dt", { text: label }), h("dd", { text: value })]),
         ),
         h("div", { class: "actions" }, [
-          button("リプレイを見る", () => this.showReplay()),
+          button("リプレイを見る", replay),
           button("もう一度遊ぶ", () => this.showSetup(), "ghost"),
           button("タイトルへ", () => this.showTitle(), "ghost"),
         ]),
@@ -832,9 +999,16 @@ ${siteUrl()}`;
 
   // ---- 8. リプレイ ----
 
-  private showReplay(): void {
-    const { source } = this.requireGame();
-    const { result, meta } = this.resultMeta();
+  private showReplay(options: {
+    readonly source: HTMLCanvasElement;
+    readonly shots: readonly Shot[];
+    readonly meta: ReplayMeta;
+    readonly text: string;
+    readonly url: string;
+    readonly back: () => void;
+  }): void {
+    const { source, meta } = options;
+    const result = { shots: options.shots };
     const canvas = createFrameCanvas();
     canvas.classList.add("replay-canvas");
     canvas.setAttribute("aria-label", "逆再生リプレイ");
@@ -854,8 +1028,9 @@ ${siteUrl()}`;
       },
       poster: () => composePoster(source, result.shots, meta),
       filename: "read-or-dead",
-      text: `READ OR DEAD 💀 ${result.survivors}人が読んで${result.shots.length}発で力尽きた。何発目で分かった？ ${HASHTAG}`,
-      back: () => this.showEnd(),
+      text: options.text,
+      url: options.url,
+      back: options.back,
       backLabel: "結果に戻る",
       resume: () => restart(),
     });
@@ -885,5 +1060,264 @@ ${siteUrl()}`;
       ]),
     );
     restart();
+  }
+
+  // ---- 9. URL リレー（オンライン） ----
+
+  private showOnlineSetup(): void {
+    const pick = (pool: OnlinePool): (() => void) =>
+      once(
+        this.guard(async () => {
+          const tree = await createTree(pool);
+          this.goTo(challengePath(tree.treeId, tree.nodeId));
+          await this.showChallenge(tree.treeId, tree.nodeId);
+        }),
+      );
+    const choices = ONLINE_POOLS.map((pool) => {
+      const choice = button(POOLS[pool].label, pick(pool));
+      choice.append(h("span", { class: "choice-count", text: `${POOLS[pool].questions.length}問` }));
+      return choice;
+    });
+    this.mount(
+      screen("setup", [
+        h("h2", { class: "heading", text: "URLでリレー" }),
+        h("p", { class: "lead", text: "問題はおまかせで選ばれます。あなたも答えを知らないまま、1人目として挑戦します。" }),
+        h("p", { class: "note", text: "正解して撃ったら、その一発のURLをSNSに投稿。開いた人が続きに挑戦します。" }),
+        h("div", { class: "choices" }, choices),
+        h("div", { class: "actions" }, [button("戻る", () => this.showTitle(), "ghost")]),
+      ]),
+    );
+  }
+
+  private showLoading(text: string): void {
+    this.mount(screen("receive", [h("p", { class: "lead", text })]));
+  }
+
+  private showOnlineMessage(title: string, text: string): void {
+    this.mount(
+      screen("receive", [
+        h("h2", { class: "heading", text: title }),
+        h("p", { class: "lead", text }),
+        h("div", { class: "actions" }, [
+          button("新しい問題でリレーを始める", () => this.showOnlineSetup()),
+          button("タイトルへ", () => this.showTitle(), "ghost"),
+        ]),
+      ]),
+    );
+  }
+
+  /** 挑戦ページ（/r/<木>/<ノード>）。問題の中身はまだ見せない */
+  private async showChallenge(treeId: string, nodeId: string): Promise<void> {
+    this.showLoading("読み込んでいます…");
+    const node = await fetchNode(treeId, nodeId).catch((err: unknown) => {
+      if (err instanceof OnlineError && err.code !== "network") {
+        this.showOnlineMessage("見つかりません", errorMessage(err));
+        throw new Redirected();
+      }
+      throw err;
+    });
+    const mine = node.myAttempt;
+    if (mine && mine.status !== "claimed") {
+      const saved = savedAttempt(treeId);
+      if (!saved || saved.attemptId !== mine.attemptId) {
+        this.showOnlineMessage("挑戦済み", "この問題にはもう挑戦しました。挑戦できるのは1つの問題につき1回だけです。");
+        return;
+      }
+      await this.resumeOnline(treeId, saved);
+      return;
+    }
+
+    const turnNumber = node.depth + 1;
+    const challenge = once(
+      this.guard(async () => {
+        await claim(treeId, nodeId);
+        const saved = savedAttempt(treeId);
+        if (!saved) throw new OnlineError("network");
+        await this.startOnline(treeId, saved, turnNumber);
+      }),
+    );
+    this.mount(
+      screen("receive", [
+        h("p", { class: "turn-kicker", text: "CHALLENGE" }),
+        h("p", { class: "turn-number" }, [h("span", { class: "turn-digits", text: String(turnNumber) }), h("span", { class: "turn-unit", text: "人目" })]),
+        h("p", { class: "lead", text: node.depth ? `${node.depth}発撃たれた画像に挑戦。` : "まだ無傷の画像に挑戦。" }),
+        h("p", {
+          class: "note",
+          text: `挑戦は1回だけ。押すと READY? のあと画像が出て時計が動きます。読めた瞬間に「わかった！」。答えるまでの制限時間は${ANSWER_LIMIT_MS / MS_PER_SECOND}秒。`,
+        }),
+        h("div", { class: "actions" }, [
+          button("挑戦する", challenge),
+          button("遊び方", () => this.showHowTo(), "ghost"),
+          button("タイトルへ", () => this.showTitle(), "ghost"),
+        ]),
+      ]),
+    );
+  }
+
+  /** READY? の演出のあとでサーバーの時計を動かし、問題を受け取ってから見せる */
+  private async startOnline(treeId: string, attempt: SavedAttempt, turnNumber: number): Promise<void> {
+    const view$ = screen("answer", [readyIntro(turnNumber)]);
+    this.mount(view$);
+    playReady();
+    await wait(prefersReducedMotion() ? REDUCED_INTRO_MS : INTRO_MS);
+    const state = await act(treeId, attempt, "start");
+    await this.resumeOnline(treeId, attempt, state, Date.now());
+  }
+
+  /**
+   * 挑戦の状態に合わせて画面を選ぶ（再読み込みで戻ってきたときも）。
+   * startedAt：READY? のあと問題を受け取った時刻。このときは画像を描いて画面に出した瞬間から時計を数える。
+   */
+  private async resumeOnline(treeId: string, attempt: SavedAttempt, known?: AttemptState, startedAt?: number): Promise<void> {
+    const state = known ?? (await act(treeId, attempt, "state"));
+    const receivedAt = startedAt ?? Date.now();
+    const question = state.questionKey ? findQuestion(state.questionKey) : undefined;
+    if (state.status === "claimed" || !question) {
+      await this.showChallenge(treeId, state.nodeId);
+      return;
+    }
+    const source = await createSource(question);
+    const now = Date.now();
+    // 再読み込みで戻ってきたときは、サーバーの時計のまま進める
+    const shownAt = startedAt === undefined ? receivedAt - (state.elapsedMs ?? 0) : now;
+    const run: OnlineRun = { treeId, attempt, state, source, shownAt, renderMs: startedAt === undefined ? 0 : now - receivedAt };
+    if (state.status === "started" || state.status === "buzzed") this.showAnswer(this.onlineTurn(run));
+    if (state.status === "correct") this.showShoot(this.onlineTurn(run));
+    if (state.status === "shot") this.showPosted(run);
+    if (isFailure(state.status)) this.showOnlineEnd(run);
+  }
+
+  private onlineTurn(run: OnlineRun): Turn {
+    // サーバーから返ってきた最新の状態
+    const live = { state: run.state };
+    const latest = (): OnlineRun => ({ ...run, state: live.state });
+    const update = async (action: "buzz" | "answer" | "give-up" | "shoot", extra: object = {}): Promise<AttemptState> => {
+      try {
+        live.state = await act(run.treeId, run.attempt, action, extra);
+        return live.state;
+      } catch (err) {
+        if (!(err instanceof OnlineError) || err.code !== "expired") throw err;
+        // 制限時間を過ぎていたら、結果の画面へ
+        live.state = await act(run.treeId, run.attempt, "state");
+        playDead();
+        this.showOnlineEnd(latest());
+        throw new Redirected();
+      }
+    };
+    return {
+      source: run.source,
+      view: () => ({
+        turnNumber: live.state.turnNumber,
+        shots: live.state.shots,
+        shownAt: run.shownAt,
+        buzzedAt: live.state.buzzMs === null ? null : run.shownAt + live.state.buzzMs,
+        power: live.state.radius,
+      }),
+      startClock: () => undefined,
+      buzz: async () => {
+        await update("buzz", { clientMs: Date.now() - run.shownAt, renderMs: run.renderMs });
+      },
+      answer: async (input) => (await update("answer", { answer: input })).status === "correct",
+      giveUp: async () => {
+        await update("give-up");
+      },
+      fire: async (point) => {
+        const { shot } = await update("shoot", { x: point.x, y: point.y });
+        if (!shot) throw new OnlineError("bad-state");
+        return shot;
+      },
+      afterShot: () => this.showPosted(latest()),
+      afterFail: () => this.showOnlineEnd(latest()),
+      giveUpPrompt: "ギブアップすると、この問題には挑戦できなくなります。いいですか？",
+      note: `読めた瞬間に押す。入力の時間は数えません。答えるまでの制限時間は${ANSWER_LIMIT_MS / MS_PER_SECOND}秒。`,
+    };
+  }
+
+  /** 撃ったあと：自分の一発の挑戦 URL を投稿する */
+  private showPosted(run: OnlineRun): void {
+    const { state } = run;
+    const shot = state.shot;
+    const childId = state.childNodeId;
+    if (!shot || !childId) {
+      this.showTitle();
+      return;
+    }
+    const url = new URL(challengePath(run.treeId, childId), location.origin).href;
+    const nextTurn = state.turnNumber + 1;
+    const buzz = state.buzzMs === null ? "" : ` ⚡${seconds(state.buzzMs)}`;
+    const text = `READ OR DEAD 🎯${turnLabel(state.turnNumber)} 突破${buzz} 💥${percent(shot.radius)}\n次は${turnLabel(nextTurn)}、あなたの番。読める？（答えはリプに書かないでね） ${HASHTAG}`;
+    const fullText = `${text}\n${url}`;
+
+    const copy = this.guard(async () => {
+      await copyText(fullText);
+      this.toast("投稿文をコピーしました");
+    });
+    const shareLink = this.guard(async () => {
+      try {
+        await navigator.share({ text, url });
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        await copyText(fullText);
+        this.toast("共有できなかったので、投稿文をコピーしました");
+      }
+    });
+    const xLink = h("a", { class: "btn btn-primary btn-link", text: "X で投稿", attrs: { href: xIntentUrl(text, url), target: "_blank", rel: "noopener" } });
+    const video = (): void =>
+      this.showShotShare({ source: run.source, before: state.shots, shot, text, url, back: () => this.showPosted(run) });
+
+    this.mount(
+      screen("handoff", [
+        h("div", { class: "sweeps" }, [sweep(shotLabel(state.turnNumber), "left", "shot"), sweep("NEXT READER?", "right", "next")]),
+        h("p", { class: "handoff-title" }, [h("span", { text: "POST" }), h("span", { text: "IT!" })]),
+        h("p", { class: "lead", text: `あなたの一発で、次は${turnLabel(nextTurn)}。このURLを投稿して、続きを誰かに読ませよう。` }),
+        h("img", { class: "card-preview", attrs: { src: `/card/${run.treeId}/${childId}.png`, alt: "リンクカードの画像（撃たれた穴の位置）", width: "1200", height: "630" } }),
+        h("p", { class: "share-text", text: fullText }),
+        h("div", { class: "actions" }, [
+          xLink,
+          h("div", { class: "actions-row" }, [
+            typeof navigator.share === "function" ? button("リンクを共有", shareLink, "ghost") : null,
+            button("投稿文をコピー", copy, "ghost"),
+          ]),
+          h("p", { class: "note", text: "画像や動画を添付するとリンクカードが出ません。続きを遊んでほしいときはリンクだけで投稿してください。" }),
+          button("撃った瞬間を動画で共有", video, "ghost"),
+          button("タイトルへ", () => this.showTitle(), "ghost"),
+        ]),
+      ]),
+    );
+  }
+
+  /** 失敗で終わった：答えと、根から自分までの枝の逆再生 */
+  private showOnlineEnd(run: OnlineRun): void {
+    const { state } = run;
+    const status = state.status === "give-up" || state.status === "expired" ? state.status : "wrong";
+    const answer = state.answer ?? "";
+    const meta: ReplayMeta = { answer, shotCount: state.shots.length, survivors: state.turnNumber - 1 };
+    const url = new URL(challengePath(run.treeId, state.nodeId), location.origin).href;
+    const text = `READ OR DEAD 💀${turnLabel(state.turnNumber)} で力尽きた（${state.shots.length}発撃たれた画像）\nあなたは読める？（答えはリプに書かないでね） ${HASHTAG}`;
+    const stats: readonly (readonly [string, string])[] = [
+      ["あなたの番", turnLabel(state.turnNumber)],
+      ["撃たれていた数", `${state.shots.length}発`],
+      ["あなたの回答", state.submittedAnswer ?? "（なし）"],
+    ];
+    const replay = (): void => this.showReplay({ source: run.source, shots: state.shots, meta, text, url, back: () => this.showOnlineEnd(run) });
+    this.mount(
+      screen("end", [
+        h("p", { class: "verdict verdict-dead", text: FAILURE_HEADLINE[status] }),
+        createStage(run.source, state.shots).element,
+        h("p", { class: "reveal" }, [h("span", { class: "reveal-label", text: "こたえ" }), h("span", { class: "reveal-answer", text: answer })]),
+        h(
+          "dl",
+          { class: "stats" },
+          stats.flatMap(([label, value]) => [h("dt", { text: label }), h("dd", { text: value })]),
+        ),
+        h("p", { class: "note", text: "同じURLからほかの人も挑戦できます。答えは言わずに、結果だけ投稿しよう。" }),
+        h("div", { class: "actions" }, [
+          h("a", { class: "btn btn-primary btn-link", text: "結果を X で投稿", attrs: { href: xIntentUrl(text, url), target: "_blank", rel: "noopener" } }),
+          button("リプレイを見る", replay, "ghost"),
+          button("新しい問題でリレーを始める", () => this.showOnlineSetup(), "ghost"),
+          button("タイトルへ", () => this.showTitle(), "ghost"),
+        ]),
+      ]),
+    );
   }
 }

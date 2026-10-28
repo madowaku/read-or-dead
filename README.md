@@ -11,7 +11,8 @@
 1. **READY?** — 挑戦者が「挑戦する」を押すと、ターン番号が飛び込んできて画像が出て、時計が動き出す
 2. **わかった！** — 読めた瞬間に押す。早いほど弾が大きい（0 秒で半径 12%、15 秒以降は 6%）。入力の速さは関係ない
 3. **回答** — チャンスは 1 回。不正解・ギブアップでゲーム終了
-4. **BANG!** — 画像をなぞって狙う。照準は小さく漂い、動かした直後は大きく揺れる。発射すると画面シェイク・衝撃波・破片・効果音・振動
+4. **BANG!** — 横→縦の 2 回タップで狙う。左右に往復する縦線をタップで止め、次に上下に往復する横線をタップで止めると発射（画面のどこをタップしてもよい）。大きい弾ほど線が速い。発射すると画面シェイク・衝撃波・破片・効果音・振動
+   - 撃たれた所は紙と同じ白になり、最初からそうだったように見える（着弾直後だけ一瞬市松模様で見せる）。「犬」の点を消して「大」と読ませるような誤読狙いができる。終了画面と逆再生では市松模様で穴を明かす
 5. **PASS IT ON!** — 次の人へ。その一発は「SHOT #004 / CAN YOU READ IT?」の 5 秒動画ですぐ共有できる。動画は最初のフレームから撃った後の画像だけを使い、答えも撃つ前の絵も出さない
 6. 終了後は、消えた絵が元に戻る逆再生リプレイ（8〜12 秒）で答え合わせ
 
@@ -24,18 +25,31 @@
 - 書き出しは Mediabunny + WebCodecs で 1 コマずつ（実時間より速く、コマ落ち・音ズレなし）。使えない端末は再生しながら録画する MediaRecorder に切り替え、それも無理なら画像で保存
 - 動画を作れない端末は画像で保存。投稿文のコピーと X の投稿画面を開くボタンつき
 
-Phase 2（URL でつなぐ SNS リレー）は未実装です。データの形（Chain / Shot / Turn）は Phase 2 でサーバーに移せるようにそろえてあります。
+### URL でリレー（v0.3）
+
+撃った人が自分の一発の「挑戦 URL」（`/r/<木>/<ノード>`）を SNS に投稿し、開いた人が続きに挑戦します。1 つの問題が 1 本の木になり、同じ URL から何人でも枝を伸ばせます。設計は [docs/v0.3-design.md](docs/v0.3-design.md)。
+
+- サーバーは Cloudflare Workers + Durable Objects（SQLite）。1 本の木を 1 つのオブジェクトが担当し、時計・正解判定・弾の大きさはサーバーで決める
+- 問題は READY? を押すまで返さない。同じ木には端末ごとに 1 回だけ。READY? から 90 秒で時間切れ
+- リンクカードは問題の画像を使わない「弾痕カード」（撃たれた穴の位置と何人目か）を Worker で作る
+- GitHub Pages 版にはサーバーがないので、URL リレーは出さない（1 台を回して遊ぶモードだけ）
 
 ## 開発
 
 ```bash
 npm install
-npm run dev      # http://localhost:5173（同じ LAN のスマホからも開ける）
-npm test         # 回答の正規化・リレー進行・リプレイの時間割のテスト
-npm run build    # dist/ に静的ファイルを出力
+npm run dev          # http://localhost:5173（Worker と Durable Object もローカルで動く。同じ LAN のスマホからも開ける）
+npm test             # 回答の正規化・リレー進行・木のリレー（Node の SQLite で）・リプレイの時間割のテスト
+npm run build        # 型チェック（ブラウザ側と Worker 側）と Workers 用のビルド（.cloudflare/output/）
+npm run build:pages  # GitHub Pages 用の静的ファイル（dist/）
+npm run deploy       # Cloudflare Workers に公開（cf auth login 済みであること）
 ```
 
-`main` への push で GitHub Pages にデプロイされます（リポジトリの Settings → Pages で Source を「GitHub Actions」にしておく必要があります）。
+Cloudflare の操作には `cf` CLI（`cloudflare.config.ts`）を使います。Wrangler の設定ファイルは置きません。
+
+`main` への push で GitHub Pages 版がデプロイされます（リポジトリの Settings → Pages で Source を「GitHub Actions」にしておく必要があります）。
+
+リンクカードの文字やレイアウトを変えたときは、`npm run dev` で `/tools/card-template.html` を開き、出てきた内容を `worker/card-template.ts` に保存します。
 
 ## 構成
 
@@ -47,10 +61,14 @@ npm run build    # dist/ に静的ファイルを出力
 | `src/game/power.ts` | 早押しの時間 → 弾の大きさ |
 | `src/game/questions.ts` / `src/data/*.json` | 問題バンク。お題を足すときは JSON に 1 行追加する |
 | `src/fx/` | 効果音（WebAudio で合成）・振動・衝撃波と破片。数値は `fx.json` / `sounds.json` で調整 |
-| `src/ui/aim.ts` | 揺れる照準 |
+| `src/ui/aim.ts` / `src/game/sweep.ts` | 横→縦の 2 回タップ照準（往復の動きは `sweep.ts`、速さは `fx.json` の `sweep`） |
 | `src/replay/` | 逆再生と 1 発クリップの時間割（`timeline.ts` / `clip.ts`）、9:16 フレームの描画、書き出し（`encode.ts`）、共有・保存 |
 | `src/fx/synth.ts` | 効果音の合成。ゲーム中の再生と、動画の音声トラック（OfflineAudioContext）で同じ音を使う |
-| `src/app.ts` | 画面遷移 |
+| `src/app.ts` | 画面遷移。回答と射撃の画面は `Turn` を通してローカルとオンラインで共用 |
+| `src/online/` | URL リレーの取り決め（`protocol.ts`）、API の呼び出し（`client.ts`）、リンクカードの配置（`card-layout.json`） |
+| `worker/index.ts` | Worker。静的ファイル・API・挑戦ページの OGP・カード画像 |
+| `worker/relay.ts` / `worker/tree.ts` | 1 本の木のリレー進行（SQLite）と、それを包む Durable Object |
+| `worker/card.ts` / `tools/card-template.*` | 弾痕カード（パレット PNG）と、そのテンプレートを作る道具 |
 | `assets-src/silhouettes/` | シルエット画像の元データ（Codex の画像生成で作成）。公開用は答えが分からないよう番号名で `public/questions/silhouette/` に置く |
 
 ### 仕様上の決めごと

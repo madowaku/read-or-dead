@@ -6,7 +6,8 @@ import { seedFrom } from "../fx/random";
 import { SOURCE_SIZE, drawDamaged } from "../game/render";
 import type { Shot } from "../game/types";
 import { COLOR, FONT } from "../theme";
-import { SHOT_CLIP_MS, clipFrameAt } from "./clip";
+import type { HoleBacking } from "../ui/stage";
+import { SHOT_CLIP_MS, clipFrameAt, type Aim } from "./clip";
 import type { ReplayFrame } from "./timeline";
 
 /** 出力解像度 */
@@ -45,6 +46,7 @@ const SHOT_NUMBER_DIGITS = 3;
 
 // ---- 毎ターン共有するクリップの描画（時間割は clip.ts） ----
 const RETICLE_LINE = 8;
+const AIM_LINE = 6;
 const RETICLE_CROSS = 1.6;
 const STAMP_SIZE = 190;
 const STAMP_START_SCALE = 1.8;
@@ -132,8 +134,15 @@ function drawHeader(canvas: HTMLCanvasElement, subtitle: string): void {
   ctx.fillText(subtitle, MARGIN, STATS_BASELINE);
 }
 
-function drawImage(canvas: HTMLCanvasElement, damaged: HTMLCanvasElement, x: number, y: number, size: number): void {
-  drawChecker(canvas, x, y, size);
+/** 画像を描く。穴の向こうは checker（答え合わせ用）か paper（遊んでいる間と同じ白）。 */
+function drawImage(canvas: HTMLCanvasElement, damaged: HTMLCanvasElement, x: number, y: number, size: number, backing: HoleBacking = "checker"): void {
+  if (backing === "checker") {
+    drawChecker(canvas, x, y, size);
+  } else {
+    const ctx = context2d(canvas);
+    ctx.fillStyle = COLOR.paper;
+    ctx.fillRect(x, y, size, size);
+  }
   context2d(canvas).drawImage(damaged, x, y, size, size);
 }
 
@@ -224,6 +233,30 @@ function easeOut(t: number): number {
   return 1 - (1 - t) * (1 - t);
 }
 
+/** 2 回タップ照準：縦線（横位置）と、決まっていれば横線と照準の円 */
+function drawAim(canvas: HTMLCanvasElement, aim: Aim, left: number, top: number): void {
+  const ctx = context2d(canvas);
+  const x = left + aim.x * IMAGE_SIZE;
+  ctx.fillStyle = COLOR.pink;
+  ctx.fillRect(x - AIM_LINE * HALF, top, AIM_LINE, IMAGE_SIZE);
+  if (aim.y === null) return;
+  const y = top + aim.y * IMAGE_SIZE;
+  ctx.fillRect(left, y - AIM_LINE * HALF, IMAGE_SIZE, AIM_LINE);
+  drawReticle(canvas, x, y, aim.radius * IMAGE_SIZE);
+}
+
+/** 着弾直後だけ、新しい穴を市松模様で見せる */
+function drawHoleReveal(canvas: HTMLCanvasElement, shot: Shot, alpha: number, left: number, top: number): void {
+  const ctx = context2d(canvas);
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(left + shot.x * IMAGE_SIZE, top + shot.y * IMAGE_SIZE, shot.radius * IMAGE_SIZE, 0, FULL_TURN);
+  ctx.clip();
+  ctx.globalAlpha = alpha;
+  drawChecker(canvas, left, top, IMAGE_SIZE);
+  ctx.restore();
+}
+
 function drawReticle(canvas: HTMLCanvasElement, x: number, y: number, radius: number): void {
   const ctx = context2d(canvas);
   ctx.strokeStyle = COLOR.pink;
@@ -282,7 +315,7 @@ function drawFlash(canvas: HTMLCanvasElement, alpha: number, x: number, y: numbe
 }
 
 /**
- * 1 発分のクリップ。狙う → BANG（フラッシュ・衝撃波・破片・揺れ）→「CAN YOU READ IT?」。
+ * 1 発分のクリップ。狙う（横→縦）→ BANG（フラッシュ・穴を一瞬見せる・衝撃波・破片・揺れ）→「CAN YOU READ IT?」。
  * 画像は最初のフレームから撃った後の状態。答えは出さない。
  */
 export function createShotClipComposer(source: HTMLCanvasElement, before: readonly Shot[], shot: Shot, meta: ShotClipMeta): ClipComposer {
@@ -297,10 +330,10 @@ export function createShotClipComposer(source: HTMLCanvasElement, before: readon
 
     beginFrame(target);
     drawHeader(target, shotLabel(meta.turnNumber));
-    drawImage(target, damaged, left, top, IMAGE_SIZE);
-    if (frame.reticle) {
-      drawReticle(target, MARGIN + frame.reticle.x * IMAGE_SIZE, IMAGE_TOP + frame.reticle.y * IMAGE_SIZE, frame.reticle.radius * IMAGE_SIZE);
-    }
+    // 遊んでいる間と同じく穴の向こうは白。着弾直後だけ新しい穴を市松模様で見せる
+    drawImage(target, damaged, left, top, IMAGE_SIZE, "paper");
+    if (frame.holeReveal) drawHoleReveal(target, shot, frame.holeReveal, left, top);
+    if (frame.aim) drawAim(target, frame.aim, left, top);
     if (frame.flash) drawFlash(target, frame.flash, left, top);
     if (frame.sinceImpact !== null) drawBurst(target, burst, frame.sinceImpact, { left: MARGIN, top: IMAGE_TOP, size: IMAGE_SIZE });
     if (frame.stamp !== null) drawStamp(target, frame.stamp);
