@@ -887,3 +887,10 @@ textarea {
     animation: none;
   }
 }
+
+.speed-label {
+  align-self: center;
+  color: var(--mist);
+  font-size: 14px;
+  font-weight: 700;
+}

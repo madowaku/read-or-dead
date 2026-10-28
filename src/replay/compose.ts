@@ -1,12 +1,12 @@
 // 9:16 の共有用フレームを描く。動画の各フレームと、保存用の 1 枚画像の両方に使う。
 // 座標は 1080×1920 の論理座標で書き、出力は X 向けに軽い 720×1280 に縮める。
 
-import { BURST_MS, createBurst, drawBurst, type Burst } from "../fx/burst";
-import fx from "../fx/fx.json";
+import { createBurst, drawBurst, type Burst } from "../fx/burst";
 import { seedFrom } from "../fx/random";
 import { SOURCE_SIZE, drawDamaged } from "../game/render";
 import type { Shot } from "../game/types";
 import { COLOR, FONT } from "../theme";
+import { SHOT_CLIP_MS, clipFrameAt } from "./clip";
 import type { ReplayFrame } from "./timeline";
 
 /** 出力解像度 */
@@ -43,16 +43,7 @@ const HALF = 0.5;
 const FULL_TURN = Math.PI + Math.PI;
 const SHOT_NUMBER_DIGITS = 3;
 
-// ---- 毎ターン共有するクリップの時間割（ミリ秒） ----
-export const SHOT_CLIP_MS = 5200;
-const AIM_MS = 1000;
-const IMPACT_AT = AIM_MS;
-const STAMP_MS = 900;
-const CARD_AT = 2100;
-const CARD_FADE_MS = 300;
-const SHAKE_PER_RADIUS = 4;
-const SHAKE_FREQUENCY = 0.09;
-const SHAKE_MS = 500;
+// ---- 毎ターン共有するクリップの描画（時間割は clip.ts） ----
 const RETICLE_LINE = 8;
 const RETICLE_CROSS = 1.6;
 const STAMP_SIZE = 190;
@@ -281,43 +272,45 @@ function drawCard(canvas: HTMLCanvasElement, meta: ShotClipMeta, alpha: number):
 
 export type ClipComposer = (target: HTMLCanvasElement, elapsedMs: number) => void;
 
+function drawFlash(canvas: HTMLCanvasElement, alpha: number, x: number, y: number): void {
+  const ctx = context2d(canvas);
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = COLOR.paper;
+  ctx.fillRect(x, y, IMAGE_SIZE, IMAGE_SIZE);
+  ctx.restore();
+}
+
 /**
- * 1 発分のクリップ。狙う → BANG（衝撃波・破片・揺れ）→「CAN YOU READ IT?」。
- * 答えは出さない。
+ * 1 発分のクリップ。狙う → BANG（フラッシュ・衝撃波・破片・揺れ）→「CAN YOU READ IT?」。
+ * 画像は最初のフレームから撃った後の状態。答えは出さない。
  */
 export function createShotClipComposer(source: HTMLCanvasElement, before: readonly Shot[], shot: Shot, meta: ShotClipMeta): ClipComposer {
-  const scratch = createImageCanvas();
+  const damaged = createImageCanvas();
+  // 撃った後の画像は全フレーム共通なので 1 回だけ描く
+  drawDamaged(damaged, source, [...before, shot]);
   const burst = shotBurst(shot);
-  const shotX = MARGIN + shot.x * IMAGE_SIZE;
-  const shotY = IMAGE_TOP + shot.y * IMAGE_SIZE;
-  const reticleRadius = shot.radius * IMAGE_SIZE;
   return (target, elapsedMs) => {
-    const sinceImpact = elapsedMs - IMPACT_AT;
-    const grow = Math.min(1, Math.max(0, sinceImpact / fx.hole.growMs));
-    const shots = grow > 0 ? [...before, { ...shot, radius: shot.radius * easeOut(grow) }] : before;
-    drawDamaged(scratch, source, shots);
+    const frame = clipFrameAt(before, shot, elapsedMs);
+    const left = MARGIN + frame.shake * IMAGE_SIZE;
+    const top = IMAGE_TOP - frame.shake * IMAGE_SIZE * HALF;
 
     beginFrame(target);
     drawHeader(target, shotLabel(meta.turnNumber));
-    const shaking = sinceImpact > 0 && sinceImpact < SHAKE_MS;
-    const shake = shaking ? Math.sin(sinceImpact * SHAKE_FREQUENCY) * (1 - sinceImpact / SHAKE_MS) * shot.radius * SHAKE_PER_RADIUS * MARGIN : 0;
-    drawImage(target, scratch, MARGIN + shake, IMAGE_TOP - shake * HALF, IMAGE_SIZE);
-
-    if (sinceImpact < 0) {
-      const t = easeOut(elapsedMs / AIM_MS);
-      const centerX = MARGIN + IMAGE_SIZE * HALF;
-      const centerY = IMAGE_TOP + IMAGE_SIZE * HALF;
-      drawReticle(target, centerX + (shotX - centerX) * t, centerY + (shotY - centerY) * t, reticleRadius);
+    drawImage(target, damaged, left, top, IMAGE_SIZE);
+    if (frame.reticle) {
+      drawReticle(target, MARGIN + frame.reticle.x * IMAGE_SIZE, IMAGE_TOP + frame.reticle.y * IMAGE_SIZE, frame.reticle.radius * IMAGE_SIZE);
     }
-    if (sinceImpact >= 0 && sinceImpact <= BURST_MS) {
-      drawBurst(target, burst, sinceImpact, { left: MARGIN, top: IMAGE_TOP, size: IMAGE_SIZE });
-    }
-    if (sinceImpact >= 0 && sinceImpact <= STAMP_MS) drawStamp(target, sinceImpact / STAMP_MS);
-    if (elapsedMs >= CARD_AT) drawCard(target, meta, Math.min(1, (elapsedMs - CARD_AT) / CARD_FADE_MS));
+    if (frame.flash) drawFlash(target, frame.flash, left, top);
+    if (frame.sinceImpact !== null) drawBurst(target, burst, frame.sinceImpact, { left: MARGIN, top: IMAGE_TOP, size: IMAGE_SIZE });
+    if (frame.stamp !== null) drawStamp(target, frame.stamp);
+    if (frame.card) drawCard(target, meta, frame.card);
   };
 }
 
 /** 動画を作れない環境向け。クリップの最後の 1 枚。 */
+export { SHOT_CLIP_MS };
+
 export function composeShotCard(source: HTMLCanvasElement, before: readonly Shot[], shot: Shot, meta: ShotClipMeta): HTMLCanvasElement {
   const canvas = createFrameCanvas();
   createShotClipComposer(source, before, shot, meta)(canvas, SHOT_CLIP_MS);

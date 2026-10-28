@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Shot } from "../game/types";
-import { HOLD_ORIGINAL_MS, HOLD_START_MS, QUESTION_CARD_MS, RESTORE_BUDGET_MS, STEP_MS, frameAt, replayDuration } from "./timeline";
+import { HOLD_ORIGINAL_MS, HOLD_START_MS, QUESTION_CARD_MS, RESTORE_BUDGET_MS, STEP_MS, frameAt, replayDuration, replaySoundCues } from "./timeline";
 
 const RADIUS = 0.08;
 const SHOT_COUNT = 3;
@@ -53,5 +53,13 @@ describe("frameAt", () => {
     const many = Array.from({ length: MANY }, (_, index) => ({ ...SHOTS[0], turnNumber: index + 1 }) as Shot);
     expect(replayDuration(MANY)).toBe(HOLD_START_MS + RESTORE_BUDGET_MS + HOLD_ORIGINAL_MS + QUESTION_CARD_MS);
     expect(frameAt(many, HOLD_START_MS + RESTORE_BUDGET_MS).phase).toBe("original");
+  });
+
+  it("巻き戻し音は発数ぶん、締めは問いかけと同時", () => {
+    const cues = replaySoundCues(SHOT_COUNT);
+    expect(cues.filter((cue) => cue.kind === "rewind")).toHaveLength(SHOT_COUNT);
+    const finale = cues.find((cue) => cue.kind === "finale");
+    expect(finale && frameAt(SHOTS, finale.atMs).phase).toBe("question");
+    expect(finale && frameAt(SHOTS, finale.atMs - 1).phase).toBe("original");
   });
 });
