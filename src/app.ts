@@ -37,7 +37,18 @@ import { clipSoundCues, type SoundCue } from "./replay/clip";
 import type { EncodedVideo } from "./replay/encode";
 import { RecordingError, canMakeVideo } from "./replay/support";
 import { play, type Drawer, type PlaybackHandle } from "./replay/player";
-import { canvasToBlob, copyText, shareOrDownload, siteUrl, xIntentUrl } from "./replay/share";
+import {
+  browserShareEnv,
+  canShareChallenge,
+  canvasToBlob,
+  challengeText,
+  copyText,
+  shareChallenge,
+  shareOrDownload,
+  siteUrl,
+  xIntentUrl,
+  type ChallengeLink,
+} from "./replay/share";
 import { frameAt, replayDuration, replaySoundCues } from "./replay/timeline";
 import { clearGame, forgetPlayed, loadGame, loadPlayed, loadVideoSound, markPlayed, saveGame, saveVideoSound } from "./storage";
 import { startSweepAim, type AimController, type AimStep } from "./ui/aim";
@@ -1254,7 +1265,11 @@ ${options.url}`;
     };
   }
 
-  /** 撃ったあと：自分の一発の挑戦 URL を投稿する。主役はリンクカードと「X で投稿」の 1 つだけ */
+  /**
+   * 撃ったあと：次の人に挑戦状（短い投稿文と、今の一発でできた枝の URL）を渡す。
+   * 主役は端末の共有シート（X・Threads・Bluesky・LINE・Discord など、端末にあるアプリへ）。
+   * 共有シートがなければコピーを主役にする。X へは直接投稿もできる。
+   */
   private showPosted(run: OnlineRun): void {
     const { state } = run;
     const shot = state.shot;
@@ -1263,39 +1278,65 @@ ${options.url}`;
       this.showTitle();
       return;
     }
-    const url = new URL(challengePath(run.treeId, childId), location.origin).href;
-    const text = postText(state.turnNumber, state.buzzMs);
-    const fullText = `${text}\n${url}`;
+    // 必ず今回の一発でできた枝の URL を渡す（親の URL やトップページではなく）
+    const link: ChallengeLink = {
+      title: "READ OR DEAD",
+      text: postText(state.turnNumber, state.buzzMs),
+      url: new URL(challengePath(run.treeId, childId), location.origin).href,
+    };
+    const env = browserShareEnv();
+    const canShare = canShareChallenge(link, env);
 
-    const copy = this.guard(async () => {
-      await copyText(fullText);
-      this.toast("コピーしました");
-    });
-    const shareLink = this.guard(async () => {
+    // 共有もコピーもできなかったときだけ、手で選んでコピーできる文章を出す
+    const manual = h("textarea", { class: "manual-copy", attrs: { readonly: "", rows: "3", "aria-label": "挑戦状（長押しで選んでコピー）" } });
+    manual.value = challengeText(link);
+    manual.hidden = true;
+    const showManual = (): void => {
+      manual.hidden = false;
+      manual.focus();
+      manual.select();
+      this.toast("コピーできませんでした。下の文章を長押しでコピーしてください");
+    };
+
+    const busy = { sharing: false };
+    const share = async (): Promise<void> => {
+      // 共有シートはタップの直後に開く（前に待つ処理を挟まない）。開いている間は二重に開かない
+      if (busy.sharing) return;
+      busy.sharing = true;
+      shareButton.setAttribute("aria-busy", "true");
       try {
-        await navigator.share({ text, url });
-      } catch (err) {
-        if (err instanceof DOMException && err.name === "AbortError") return;
-        await copyText(fullText);
-        this.toast("共有できなかったので、コピーしました");
+        const outcome = await shareChallenge(link, env);
+        // 共有シートで選ばれても、実際に投稿されたかは分からないので「投稿しました」とは出さない
+        if (outcome === "copied") this.toast("挑戦状をコピーしました");
+        if (outcome === "failed") showManual();
+      } finally {
+        busy.sharing = false;
+        shareButton.removeAttribute("aria-busy");
       }
-    });
-    const xLink = h("a", { class: "btn btn-primary btn-link", text: "X に投稿", attrs: { href: xIntentUrl(text, url), target: "_blank", rel: "noopener" } });
+    };
+    const shareButton = button(canShare ? "挑戦状を共有" : "挑戦状をコピー", () => void share());
+    const copy = async (): Promise<void> => {
+      try {
+        await copyText(challengeText(link));
+        this.toast("コピーしました");
+      } catch {
+        showManual();
+      }
+    };
+    const xLink = h("a", { class: "btn btn-ghost btn-link", text: "X に投稿", attrs: { href: xIntentUrl(link.text, link.url), target: "_blank", rel: "noopener" } });
     const video = (): void =>
-      this.showShotShare({ source: run.source, before: state.shots, shot, text, url, back: () => this.showPosted(run) });
+      this.showShotShare({ source: run.source, before: state.shots, shot, text: link.text, url: link.url, back: () => this.showPosted(run) });
 
     this.mount(
       screen("posted", [
         h("p", { class: "kicker", text: `${shotLabel(state.turnNumber)}　弾 ${percent(shot.radius)}` }),
         h("h2", { class: "posted-title", text: "次の人に読ませよう" }),
         cardImage(run.treeId, childId),
-        h("p", { class: "fine", text: "投稿にはこのカードが付きます。答えは出ません。" }),
+        h("p", { class: "fine", text: "好きなアプリへ挑戦状を渡そう。答えは出ません。" }),
         h("div", { class: "actions" }, [
-          xLink,
-          h("div", { class: "actions-row" }, [
-            typeof navigator.share === "function" ? button("ほかで共有", shareLink, "ghost") : null,
-            button("コピー", copy, "ghost"),
-          ]),
+          shareButton,
+          h("div", { class: "actions-row" }, [xLink, canShare ? button("コピー", () => void copy(), "ghost") : null]),
+          manual,
           h("div", { class: "text-links" }, [textButton("撃った瞬間を動画にする", video), textButton("タイトルへ", () => this.showTitle())]),
         ]),
       ]),
