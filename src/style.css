@@ -1010,13 +1010,82 @@ textarea {
   border: 2px solid var(--mist);
 }
 
-.share-text {
+/* 挑戦ページと投稿画面。色の強いピンクは主役のボタンだけにして、
+   青の上にピンクの文字を置かない（ちらついて見えるため）。文字は白と薄い青で */
+
+.kicker {
   margin: 0;
-  padding: 12px 14px;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  font-size: 14px;
-  line-height: 1.5;
-  background: var(--cobalt-deep);
+  color: var(--mist);
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: 0.04em;
+}
+
+.posted-title {
+  margin: -8px 0 0;
+  font-family: var(--display);
+  font-weight: 400;
+  line-height: 1.1;
+  color: var(--paper);
+}
+
+.posted-title {
+  font-size: clamp(26px, 8vw, 34px);
+}
+
+.steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: step;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.steps li {
+  counter-increment: step;
+  padding: 10px 6px;
   border-radius: 8px;
+  background: var(--cobalt-deep);
+  text-align: center;
+  font-weight: 700;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.steps li::before {
+  content: counter(step);
+  display: block;
+  font-family: var(--display);
+  font-size: 20px;
+  color: var(--mist);
+}
+
+.fine {
+  margin: 0;
+  color: var(--mist);
+  font-size: 13px;
+  text-align: center;
+}
+
+.text-links {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 4px 20px;
+}
+
+.text-button {
+  min-height: 44px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--mist);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+  cursor: pointer;
 }

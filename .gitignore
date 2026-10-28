@@ -5,3 +5,4 @@ assets-src/**/codex.log
 .cloudflare/
 .wrangler/
 .dev.vars*
+.playwright-mcp/
